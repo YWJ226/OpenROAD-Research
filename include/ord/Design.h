@@ -49,6 +49,10 @@ namespace dpl {
 class Opendp;
 }
 
+namespace tdp {
+class Timingdp;
+}
+
 namespace exa {
 class Example;
 }
@@ -166,6 +170,7 @@ class Design
   cts::TritonCTS* getTritonCts();
   dft::Dft* getDft();
   dpl::Opendp* getOpendp();
+  tdp::Timingdp* getTimingdp();
   exa::Example* getExample();
   drt::TritonRoute* getTritonRoute();
   fin::Finale* getFinale();

@@ -58,6 +58,10 @@ namespace dpl {
 class Opendp;
 }
 
+namespace tdp {
+class Timingdp;
+}
+
 namespace fin {
 class Finale;
 }
@@ -161,6 +165,7 @@ class OpenRoad
   cts::TritonCTS* getTritonCts() { return tritonCts_; }
   dbVerilogNetwork* getVerilogNetwork() { return verilog_network_; }
   dpl::Opendp* getOpendp() { return opendp_; }
+  tdp::Timingdp* getTimingdp() { return timingdp_; }
   fin::Finale* getFinale() { return finale_; }
   ram::RamGen* getRamGen() { return ram_gen_; }
   tap::Tapcell* getTapcell() { return tapcell_; }
@@ -266,6 +271,7 @@ class OpenRoad
   rsz::Resizer* resizer_ = nullptr;
   ppl::IOPlacer* ioPlacer_ = nullptr;
   dpl::Opendp* opendp_ = nullptr;
+  tdp::Timingdp* timingdp_ = nullptr;
   fin::Finale* finale_ = nullptr;
   ram::RamGen* ram_gen_ = nullptr;
   mpl::MacroPlacer* macro_placer_ = nullptr;

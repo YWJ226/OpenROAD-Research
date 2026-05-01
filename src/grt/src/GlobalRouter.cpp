@@ -215,6 +215,14 @@ NetRouteMap& GlobalRouter::getRoutes()
   return routes_;
 }
 
+void GlobalRouter::setRoute(odb::dbNet* db_net, const GRoute& route)
+{
+  routes_[db_net] = route;
+  if (db_net_map_.find(db_net) == db_net_map_.end() && grid_) {
+        addNet(db_net);
+  }
+}
+
 NetRouteMap GlobalRouter::getPartialRoutes()
 {
   NetRouteMap net_routes;

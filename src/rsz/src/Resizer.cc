@@ -2552,6 +2552,50 @@ void Resizer::resizeSlackPreamble()
 
 // Run repair_design to repair long wires and max slew, capacitance and fanout
 // violations. Find the slacks, and then undo all changes to the netlist.
+void Resizer::findResizeSlackstdp(bool run_journal_restore)
+{
+  initBlock();
+
+  est::ParasiticsSrc parasitics_src = global_router_->haveRoutes()
+                                          ? est::ParasiticsSrc::global_routing
+                                          : est::ParasiticsSrc::placement;
+  estimate_parasitics_->setParasiticsSrc(parasitics_src);
+  est::IncrementalParasiticsGuard guard(estimate_parasitics_);
+  if (run_journal_restore) {
+    journalBegin();
+  }
+  ensureLevelDrvrVertices();
+  estimate_parasitics_->estimateParasitics(parasitics_src);
+  // int repaired_net_count, slew_violations, cap_violations;
+  // int fanout_violations, length_violations;
+
+  // Start incremental global routing if global routing parasitics are being
+  // used.
+  // if (parasitics_src == est::ParasiticsSrc::global_routing) {
+  //   global_router_->startIncremental();
+  // }
+                               
+  // // End incremental global routing if global routing parasitics were used.
+  // if (parasitics_src == est::ParasiticsSrc::global_routing) {
+  //   global_router_->endIncremental();
+    
+  // } else {
+  //   // Fully rebuffer doesn't work with global routing parasitics.
+  //   // TODO: fix the function to understand the parasitics from the global
+  //   // routing.
+  //   fullyRebuffer(nullptr);
+  // }
+  ensureLevelDrvrVertices();
+
+  findResizeSlacks1();
+  // if (run_journal_restore) {
+  //   db_cbk_->addOwner(block_);
+  //   journalRestore();
+  //   db_cbk_->removeOwner();
+  //   level_drvr_vertices_valid_ = false;
+  // }
+}
+
 void Resizer::findResizeSlacks(bool run_journal_restore)
 {
   initBlock();

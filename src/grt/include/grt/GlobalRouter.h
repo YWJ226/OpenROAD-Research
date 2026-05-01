@@ -195,6 +195,8 @@ class GlobalRouter
   void globalRoute(bool save_guides = false);
   void saveCongestion();
   NetRouteMap& getRoutes();
+  void setRoute(odb::dbNet* db_net, const GRoute& route);
+  void clearRoute(odb::dbNet* db_net) { routes_.erase(db_net); }
   NetRouteMap getPartialRoutes();
   Net* getNet(odb::dbNet* db_net);
   int getTileSize() const;

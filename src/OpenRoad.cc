@@ -34,6 +34,8 @@
 #include "dft/MakeDft.hh"
 #include "dpl/MakeOpendp.h"
 #include "dpl/Opendp.h"
+#include "tdp/MakeTimingdp.h"
+#include "tdp/Timingdp.h"
 #include "drt/MakeTritonRoute.h"
 #include "drt/TritonRoute.h"
 #include "dst/Distributed.h"
@@ -211,7 +213,6 @@ void OpenRoad::init(Tcl_Interp* tcl_interp,
                                          antenna_checker_,
                                          opendp_);
   grt::initGui(global_router_, db_, logger_);
-
   estimate_parasitics_ = new est::EstimateParasitics(
       logger_, callback_handler_, db_, sta_, stt_builder_, global_router_);
   est::initGui(estimate_parasitics_);
@@ -243,6 +244,7 @@ void OpenRoad::init(Tcl_Interp* tcl_interp,
       db_, logger_, callback_handler_, distributer_, stt_builder_);
   drt::initGui(detailed_router_);
 
+  timingdp_ = new tdp::Timingdp(db_, logger_, sta_, resizer_, global_router_);
   replace_ = new gpl::Replace(db_, sta_, resizer_, global_router_, logger_);
   pdnsim_ = new psm::PDNSim(logger_, db_, sta_, estimate_parasitics_, opendp_);
   pdngen_ = new pdn::PdnGen(db_, logger_);
@@ -277,6 +279,7 @@ void OpenRoad::init(Tcl_Interp* tcl_interp,
   gpl::initReplace(tcl_interp);
   gpl::initReplaceGraphics(replace_, logger_);
   dpl::initOpendp(tcl_interp);
+  tdp::initTimingdp(tcl_interp);
   fin::initFinale(tcl_interp);
   ram::initRamGen(tcl_interp);
   grt::initTcl(tcl_interp);

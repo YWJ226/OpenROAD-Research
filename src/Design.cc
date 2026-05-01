@@ -255,6 +255,11 @@ dpl::Opendp* Design::getOpendp()
   return getOpenRoad()->getOpendp();
 }
 
+tdp::Timingdp* Design::getTimingdp()
+{
+  return getOpenRoad()->getTimingdp();
+}
+
 exa::Example* Design::getExample()
 {
   return getOpenRoad()->getExample();
