@@ -730,6 +730,12 @@ void EstimateParasitics::estimateWireParasiticSteiner(
     }
   }
 
+  // auto net_name = network_->name(net);
+  // auto pin_name = network_->name(drvr_pin);
+  // logger_->info(EST, 1234, "Processing net: {} driver: {}", net_name, pin_name);
+
+
+
   if (!all_modes_ideal_clock) {
     SteinerTree* tree = makeSteinerTree(drvr_pin);
     if (tree) {
