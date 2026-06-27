@@ -70,5 +70,4 @@ tmp/
 
 # Developing module
 src/gpl_gpu_xpl
-src/tdp
 src/lgista

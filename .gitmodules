@@ -10,3 +10,7 @@
 [submodule "subfolder/METIS"]
 	path = subfolder/METIS
 	url = https://github.com/KarypisLab/METIS.git
+[submodule "src/tdp"]
+	path = src/tdp
+	url = https://github.com/CODA-Team/3D-TDP.git
+	branch = main
