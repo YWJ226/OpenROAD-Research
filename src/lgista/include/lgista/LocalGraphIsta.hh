@@ -79,6 +79,18 @@ class LocalGraphIsta {
   // date. Returns nullptr if the instance has no usable driver.
   std::unique_ptr<PtGraph> analyzeOnly(sta::Instance* inst, int depth = 1);
 
+  // Granular wall-clock sub-step timings optionally filled by analyzeOnly
+  // (set the out-pointer; only populated when non-null). All times in ms.
+  struct AnalyzeTimings {
+    double make_ptgraph_ms = 0;
+    double recompute_para_ms = 0;
+    double delays_ms = 0;
+    double arrivals_ms = 0;
+    double requireds_ms = 0;
+  };
+  std::unique_ptr<PtGraph> analyzeOnly(sta::Instance* inst, int depth,
+                                       AnalyzeTimings* out_tm);
+
   // DEMO/convenience only: iterate every leaf instance and analyze it. This
   // imposes an iteration order, which is normally the optimizer's job -- use
   // it for smoke tests, not as the production traversal. Returns the number

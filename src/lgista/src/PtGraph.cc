@@ -1595,8 +1595,12 @@ PtGraph::getRefPinCapacitance(const PtVertex &pt_vertex,
   }
   sta::LibertyPort *lib_port = pt_vertex.libertyPort();
   if (!lib_port) {
-    printf("PtGraph::getRefPinCapacitance: no lib port for pin %s\n",
-            sta_->network()->portName(pin));
+    sta::Instance* inst = sta_->network()->instance(pin);
+    std::string inst_name = inst ? sta_->network()->name(inst) : "no-inst";
+    sta::LibertyCell* lc = inst ? sta_->network()->libertyCell(inst) : nullptr;
+    std::string lc_name = lc ? lc->name() : "no-libcell";
+    printf("PtGraph::getRefPinCapacitance: no lib port for pin (instance=%s, libcell=%s)\n",
+           inst_name.c_str(), lc_name.c_str());
     fflush(stdout);
     return 0.0f;
   }

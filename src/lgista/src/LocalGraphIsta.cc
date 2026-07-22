@@ -4,6 +4,7 @@
 
 #include "lgista/LocalGraphIsta.hh"
 
+#include <chrono>
 #include <cstdio>
 #include <memory>
 
@@ -17,6 +18,11 @@
 #include "IstaWriteback.hh"
 
 namespace lgista {
+
+static inline double now_ms() {
+    return std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 
 LocalGraphIsta::LocalGraphIsta(sta::dbSta* sta) : sta_(sta)
 {
@@ -116,13 +122,21 @@ bool LocalGraphIsta::analyzeAndCommit(sta::Instance* inst, int depth)
 
 std::unique_ptr<PtGraph> LocalGraphIsta::analyzeOnly(sta::Instance* inst, int depth)
 {
+  return analyzeOnly(inst, depth, nullptr);
+}
+
+std::unique_ptr<PtGraph> LocalGraphIsta::analyzeOnly(sta::Instance* inst, int depth,
+                                                     AnalyzeTimings* tm)
+{
   if (inst == nullptr)
     return nullptr;
   ensureInit();
 
+  double t0 = tm ? now_ms() : 0.0;
   auto pt_graph = std::make_unique<PtGraph>(sta_);
   if (!local_sta_->makePtGraph(pt_graph.get(), inst, -1, depth))
     return nullptr;
+  if (tm) { tm->make_ptgraph_ms += now_ms() - t0; t0 = now_ms(); }
 
   // Reduce parasitics into PtGraph-local PtPiElmore so the delay calc uses
   // them at priority #1 (over the global scene). For nets present in the
@@ -131,10 +145,14 @@ std::unique_ptr<PtGraph> LocalGraphIsta::analyzeOnly(sta::Instance* inst, int de
   // this, localParasiticLoad would read the scene PiElmore (current geometry)
   // and ignore any trial parasitics built into the local container.
   local_sta_->localParasitics()->recomputePtParasitics(pt_graph.get());
+  if (tm) { tm->recompute_para_ms += now_ms() - t0; t0 = now_ms(); }
 
   local_sta_->findLocalDelays(pt_graph.get(), arc_delay_calc_);
+  if (tm) { tm->delays_ms += now_ms() - t0; t0 = now_ms(); }
   local_sta_->findLocalArrivals(pt_graph.get());
+  if (tm) { tm->arrivals_ms += now_ms() - t0; t0 = now_ms(); }
   local_sta_->findLocalRequireds(pt_graph.get());
+  if (tm) { tm->requireds_ms += now_ms() - t0; }
 
   // NOTE: deliberately NO updateTimingFromPtGraph() — global graph stays
   // frozen; caller reads local values from the returned PtGraph.
