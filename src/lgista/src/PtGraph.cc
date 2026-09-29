@@ -218,7 +218,7 @@ PtGraph::makeGraph(sta::InstanceSet &inst_seq, sta::Instance *ref_inst,
   ref_lib_cell_ = sta_->network()->libertyCell(ref_inst);
   if (ref_lib_cell_ == nullptr) {
     printf("Warning: PtGraph::makeGraph: ref_inst %s has no liberty cell\n",
-           sta_->network()->name(ref_inst));
+           sta_->network()->name(ref_inst).c_str());
     fflush(stdout);
   }
   makePtVertexAndPtEdge(inst_seq, search_pred);
@@ -463,6 +463,14 @@ PtGraph::makeEdge(sta::Edge *edge,
   pt_vertices_[pt_to].in_edges_ = edge_id;
 
   return edge_id;
+}
+
+EdgeId
+PtGraph::makeTrialBaseEdge(sta::Edge* edge, VertexId from, VertexId to)
+{
+  const auto id = makeEdge(edge, from, to);
+  pt_edges_[id].copyInfoFromEdge(ap_count_);
+  return id;
 }
 
 VertexId
@@ -749,7 +757,7 @@ PtGraph::updateTimingArcSets()
       }
       if (new_arc_set == nullptr) {
         printf("PtGraph::updateTimingArcSets: no matching timing arc set in ref_lib_cell_ %s for PtEdge %u of edge %s\n",
-               ref_lib_cell_->name(),
+               ref_lib_cell_->name().c_str(),
                 pt_edge.objectIdx(),
                pt_edge.edge()->to_string(sta_->graph()).c_str());
         fflush(stdout);
@@ -763,10 +771,11 @@ PtGraph::updateTimingArcSets()
 sta::LibertyCell *
 PtVertex::libertyCell() const
 {
-  if (liberty_cell_)
-    return liberty_cell_;
+  // A mapped port is authoritative after a trial cell replacement.
   if (liberty_port_)
     return liberty_port_->libertyCell();
+  if (liberty_cell_)
+    return liberty_cell_;
   return nullptr;
 }
 
@@ -1089,7 +1098,7 @@ PtGraph::printGraph(const char *output_path, bool dot_format)
     fprintf(out, "}\n");
   } else {
     fprintf(out, "PtGraph for ref inst %s: %zu vertices, %zu edges\n",
-            ref_name,
+            ref_name.c_str(),
             vertex_count,
             edge_count);
     for (size_t vid = 1; vid < pt_vertices_.size(); vid++) {

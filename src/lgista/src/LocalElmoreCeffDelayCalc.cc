@@ -40,16 +40,26 @@ using sta::TimingArc;
 
 ////////////////////////////////////////////////////////////////
 // Performance instrumentation (mirrors LocalDmpDelayCalc).
-// Gated by LRF_DCALC_STATS=1.
+// LRF_DCALC_STATS=1 gates collection as well as printing.
 ////////////////////////////////////////////////////////////////
 namespace {
 std::atomic<uint64_t> g_ec_gate_calls{0};
 std::atomic<uint64_t> g_ec_gate_ns{0};
 
+// Read once when the first calculator is constructed, before worker calls.
+// Set LRF_DCALC_STATS before starting OpenROAD; runtime toggles are not used.
+bool ecStatsEnabled()
+{
+  static const bool enabled = []() {
+    const char *s = std::getenv("LRF_DCALC_STATS");
+    return s && s[0] == '1';
+  }();
+  return enabled;
+}
+
 void printEcStats()
 {
-  const char *s = std::getenv("LRF_DCALC_STATS");
-  if (!s || s[0] != '1') return;
+  if (!ecStatsEnabled()) return;
   const uint64_t calls = g_ec_gate_calls.load(std::memory_order_relaxed);
   const uint64_t ns    = g_ec_gate_ns.load(std::memory_order_relaxed);
   const double  ms    = ns / 1.0e6;
@@ -63,7 +73,10 @@ void printEcStats()
 void registerEcAtExitOnce()
 {
   static std::once_flag once;
-  std::call_once(once, []() { std::atexit(&printEcStats); });
+  std::call_once(once, []() {
+    (void)ecStatsEnabled();
+    std::atexit(&printEcStats);
+  });
 }
 } // namespace
 
@@ -95,17 +108,21 @@ LocalElmoreCeffDelayCalc::gateDelay(const Pin *drvr_pin,
                                     const LoadPinIndexMap &load_pin_index_map,
                                     const sta::Scene *scene, const sta::MinMax *min_max)
 {
-  const auto _t0 = std::chrono::steady_clock::now();
+  const bool stats_enabled = ecStatsEnabled();
   struct ScopedTimer {
+    bool enabled;
     std::chrono::steady_clock::time_point t0;
     ~ScopedTimer() {
+      if (!enabled) return;
       const auto t1 = std::chrono::steady_clock::now();
       g_ec_gate_calls.fetch_add(1, std::memory_order_relaxed);
       g_ec_gate_ns.fetch_add(
           std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count(),
           std::memory_order_relaxed);
     }
-  } _timer{_t0};
+  } _timer{stats_enabled,
+           stats_enabled ? std::chrono::steady_clock::now()
+                         : std::chrono::steady_clock::time_point{}};
 
   const RiseFall *rf = arc->toEdge()->asRiseFall();
   const LibertyLibrary *drvr_library = arc->to()->libertyLibrary();

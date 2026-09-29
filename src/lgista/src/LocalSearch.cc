@@ -241,6 +241,13 @@ LocalArrivalVisitor::findVertexArrival(PtVertex &pt_vertex)
 
   bool arrival_changed = true;
 
+  if (pt_graph_->isMappedCellTrial()
+      && ((!network_->isTopLevelPort(pin) && modes()[0]->sdc()->hasInputDelay(pin))
+          || modes()[0]->sdc()->isPathDelayInternalFrom(pin)
+          || modes()[0]->sdc()->isLeafPinClock(pin)
+          || vertex->isRegClk()))
+    throw std::runtime_error("mapped trial requires unsupported clock/segment seeding");
+
   tag_bldr_->init(vertex);
   has_fanin_one_ = graph_->hasFaninOne(vertex);
 
@@ -359,6 +366,8 @@ bool
 LocalPathVisitor::localVisitEdge(PtVertex &from_pt_vertex, 
                         PtEdge &pt_edge, PtVertex &to_pt_vertex)
 {
+  if (pt_graph_->isMappedCellTrial() && !pt_edge.trialSearchEnabled())
+    return true;
   if (from_pt_vertex.tagGroupIndex() == sta::tag_group_index_max)
     return true;
   TagGroup *from_tag_group = pt_graph_->tagGroup(from_pt_vertex);
@@ -371,7 +380,7 @@ LocalPathVisitor::localVisitEdge(PtVertex &from_pt_vertex,
       TagIndex tag_idx = from_path->tagIndex(this);
       if (tag_idx == sta::tag_group_index_max || tag_idx >= search_->tagCount()) {
         printf("Warning: LocalPathVisitor::localVisitEdge: Skipping invalid path on vertex %s that may have been corrupted by copyPaths.\n",
-               from_pt_vertex.pin() ? network_->name(from_pt_vertex.pin()) : "virtual");
+               (from_pt_vertex.pin() ? network_->name(from_pt_vertex.pin()) : "virtual").c_str());
         fflush(stdout);
         continue;
       }
@@ -455,8 +464,49 @@ LocalPathVisitor::localVisitFromPath(const Pin *from_pin,
   ArcDelay arc_delay = 0.0;
   Arrival to_arrival;
 
-  // Virtual edge: combinational pass-through (tag unchanged)
-  // Skip thruTag since it dereferences the null base edge.
+  if (pt_graph_->isMappedCellTrial()) {
+    // Mapped trials may run concurrently against frozen STA. Reuse a frozen
+    // destination tag for every edge, including base edges: Search::thruTag
+    // and clock/segment seed methods can intern new global tags or ClkInfo.
+    if (!role || (role != TimingRole::combinational() && role != TimingRole::wire())
+        || from_tag->isClock() || from_tag->isGenClkSrcPath()
+        || (from_tag->states() && !from_tag->states()->empty()))
+      throw std::runtime_error("mapped trial does not support clock or exception-state paths");
+    auto* sdc = from_tag->scene()->sdc();
+    if (sdc->isPathDelayInternalFromBreak(to_pin)
+        || sdc->isPathDelayInternalToBreak(from_pin))
+      throw std::runtime_error("mapped trial does not support segmented data paths");
+    ExceptionStateSet* thru_states = nullptr;
+    sdc->exceptionThruStates(from_pin, to_pin, to_rf, min_max, thru_states);
+    const bool has_thru_states = thru_states && !thru_states->empty();
+    delete thru_states;
+    if (has_thru_states)
+      throw std::runtime_error("mapped trial does not support new exception states");
+    Tag probe(from_tag->scene(), 0, to_rf, min_max, from_tag->clkInfo(),
+              false, nullptr, false, nullptr, false);
+    if (auto* group = pt_graph_->tagGroup(to_pt_vertex)) {
+      for (const auto& entry : *group->pathIndexMap()) {
+        if (Tag::equal(entry.first(), &probe, this)) {
+          to_tag = entry.first();
+          break;
+        }
+      }
+    }
+    if (!to_tag)
+      throw std::runtime_error("mapped trial requires a new timing tag or changed path topology");
+    arc_delay = pt_graph_->arcDelay(pt_edge, arc,
+                                  pt_graph_->scene()->dcalcAnalysisPtIndex(min_max));
+    if (delayInf(arc_delay, this))
+      throw std::runtime_error("mapped trial has an unavailable timing arc delay");
+    to_arrival = from_arrival + arc_delay;
+    return localVisitFromToPath(from_pt_vertex, from_rf,
+                               from_tag, from_path, from_arrival,
+                               pt_edge, arc, arc_delay,
+                               to_pt_vertex, to_rf, to_tag, to_arrival, min_max);
+  }
+
+  // Legacy virtual-buffer path. Mapped-cell trials use the RF-aware frozen
+  // tag path above; default analyzeOnly behavior remains unchanged.
   if (!pt_edge.hasBase()) {
     to_tag = from_tag;
     arc_delay = pt_graph_->arcDelay(pt_edge, arc, pt_graph_->scene()->dcalcAnalysisPtIndex(min_max));
@@ -664,11 +714,19 @@ LocalArrivalVisitor::localSetVertexArrivals(PtVertex &pt_vertex, TagGroupBldr *t
   } else {
     size_t path_count = prev_tag_group->pathCount();
     std::vector<Required> saved_reqs(path_count);
+    std::vector<Path> saved_paths;
+    if (pt_graph_->isMappedCellTrial())
+      saved_paths.assign(prev_paths, prev_paths + path_count);
     for (size_t i = 0; i < path_count; i++)
       saved_reqs[i] = prev_paths[i].required();
     tag_bldr->copyPaths(prev_tag_group, prev_paths);
-    for (size_t i = 0; i < path_count; i++)
-      prev_paths[i].setRequired(saved_reqs[i]);
+    for (size_t i = 0; i < path_count; i++) {
+      if (pt_graph_->isMappedCellTrial()
+          && saved_paths[i].dcalcAnalysisPtIndex(this) != pt_graph_->apIndex())
+        prev_paths[i] = saved_paths[i];
+      else
+        prev_paths[i].setRequired(saved_reqs[i]);
+    }
   }
 }
 
@@ -745,6 +803,9 @@ LocalRequiredCmp::requiredsSave(PtVertex &pt_vertex,
   PtVertexPathIterator path_iter(pt_vertex, sta, pt_graph);
   while (path_iter.hasNext()) {
     Path *path = path_iter.next();
+    if (pt_graph->isMappedCellTrial()
+        && path->dcalcAnalysisPtIndex(sta) != pt_graph->apIndex())
+      continue;
     size_t path_index = ptPathIndex(pt_vertex, path);
     Required req = requireds_[path_index];
     const Required &prev_req = path->required();

@@ -405,7 +405,7 @@ LocalSta::collectLocalFanouts(Pin *drvr_pin, InstanceSet &local_instances)
   VertexId vertex_id = network_->vertexId(drvr_pin);
   if (vertex_id == vertex_id_null) {
     printf("LocalSta::collectLocalFanouts vertex_id is 0 for pin %s\n",
-           network_->name(drvr_pin));
+           network_->name(drvr_pin).c_str());
     fflush(stdout);
     return;
   }
@@ -413,7 +413,7 @@ LocalSta::collectLocalFanouts(Pin *drvr_pin, InstanceSet &local_instances)
   Vertex *vertex = graph_->pinDrvrVertex(drvr_pin);
   if (vertex == nullptr) {
     printf("LocalSta::collectLocalFanouts vertex is nullptr for pin %s\n",
-           network_->name(drvr_pin));
+           network_->name(drvr_pin).c_str());
     fflush(stdout);
     return;
   }
@@ -853,7 +853,7 @@ LocalSta::seedDrvrSlew(PtVertex &pt_drvr_vertex, PtGraph *pt_graph,
   InputDrive *drive = 0;
   if (network_->isTopLevelPort(drvr_pin)) {
     Port *port = network_->port(drvr_pin);
-    drive = sta_->cmdMode()->sdc()->findInputDrive(port);
+    drive = pt_graph->scene()->sdc()->findInputDrive(port);
   }
   DcalcAPIndex dcalc_ap = pt_graph->apIndex();
   for (const RiseFall *rf : RiseFall::range()) {
@@ -865,7 +865,12 @@ LocalSta::seedDrvrSlew(PtVertex &pt_drvr_vertex, PtGraph *pt_graph,
       drive->driveCell(rf, cnst_min_max, drvr_cell, from_port,
                        from_slews, to_port);
       if (drvr_cell) {
-        printf("Warning: LocalSta::seedDrvrSlew: Input drive seeding not implemented yet\n");
+        if (pt_graph->isMappedCellTrial())
+          throw std::runtime_error("mapped trial does not support driving-cell input seeding");
+        if (from_port == nullptr)
+          from_port = driveCellDefaultFromPort(drvr_cell, to_port);
+        findLocalInputDriverDelay(drvr_cell, pt_drvr_vertex, rf, from_port,
+                                  from_slews, to_port, arc_delay_calc, pt_graph);
       } else
         seedNoDrvrCellSlew(pt_drvr_vertex, drvr_pin, rf, drive,
                            dcalc_ap, arc_delay_calc, pt_graph);
@@ -896,7 +901,7 @@ LocalSta::seedNoDrvrCellSlew(PtVertex &pt_drvr_vertex,
     // Top level bidirect driver uses load slew unless
     // bidirect instance paths are disabled.
     printf("Warning: LocalSta::seedNoDrvrCellSlew: Input drive slew not found for pin %s\n",
-           network_->name(drvr_pin));
+           network_->name(drvr_pin).c_str());
            fflush(stdout);
   }
   Delay drive_delay = delay_zero;
@@ -1001,29 +1006,63 @@ LocalSta::loadSlewFromGraph(PtVertex &root_pt_vertex, PtGraph *pt_graph)
 }
 
 void 
-LocalSta::findInputDriverDelay(const LibertyCell *drvr_cell,
-                              const Pin *drvr_pin,
-                              Vertex *drvr_vertex,
-                              const RiseFall *rf,
-                              const LibertyPort *from_port,
-                              float *from_slews,
-                              const LibertyPort *to_port,
-                              DcalcAPIndex dcalc_ap)
+LocalSta::findLocalInputDriverDelay(const LibertyCell *drvr_cell,
+                                   PtVertex &pt_drvr_vertex,
+                                   const RiseFall *rf,
+                                   const LibertyPort *from_port,
+                                   float *from_slews,
+                                   const LibertyPort *to_port,
+                                   ArcDelayCalc *arc_delay_calc,
+                                   PtGraph *pt_graph)
 {
   for (TimingArcSet *arc_set : drvr_cell->timingArcSets(from_port, to_port)) {
     for (TimingArc *arc : arc_set->arcs()) {
       if (arc->toEdge()->asRiseFall() == rf) {
         float from_slew = from_slews[arc->fromEdge()->index()];
-        // TODO(LRF-migration): findInputDriverDelay has no callers (dead). Base
-        // GraphDelayCalc::findInputArcDelay now takes (scene, min_max, arc_dcalc);
-        // pass the single default-scene max AP consistent with carrier invariant.
-        (void) dcalc_ap;
-        findInputArcDelay(drvr_pin, drvr_vertex, arc, from_slew,
-                          scenes()[0], MinMax::max());
+        findLocalInputArcDelay(pt_drvr_vertex, arc, from_slew,
+                               arc_delay_calc, pt_graph);
       }
     }
   }
-  arc_delay_calc_->finishDrvrPin();
+  arc_delay_calc->finishDrvrPin();
+}
+
+void
+LocalSta::findLocalInputArcDelay(PtVertex &pt_drvr_vertex,
+                                const TimingArc *arc,
+                                float from_slew,
+                                ArcDelayCalc *arc_delay_calc,
+                                PtGraph *pt_graph)
+{
+  const RiseFall *drvr_rf = arc->toEdge()->asRiseFall();
+  if (drvr_rf) {
+    const Pin *drvr_pin = pt_drvr_vertex.pin();
+    const DcalcAPIndex ap_index = pt_graph->apIndex();
+    const Scene *scene = pt_graph->scene();
+    const MinMax *min_max = pt_graph->minMax();
+    const Parasitic *parasitic;
+    float load_cap;
+    localParasiticLoad(pt_drvr_vertex, drvr_rf, ap_index, nullptr,
+                      load_cap, parasitic, pt_graph);
+    LoadPinIndexMap load_pin_index_map = makeLoadPinIndexMap(pt_drvr_vertex, pt_graph);
+
+    ArcDcalcResult intrinsic_result = arc_delay_calc->gateDelay(
+        drvr_pin, arc, Slew(from_slew), 0.0, nullptr,
+        load_pin_index_map, scene, min_max);
+    ArcDcalcResult gate_result = arc_delay_calc->gateDelay(
+        drvr_pin, arc, Slew(from_slew), load_cap, parasitic,
+        load_pin_index_map, scene, min_max);
+
+    // Match GraphDelayCalc: only the load-dependent driver delay belongs
+    // on the input wire arcs. Candidate results stay in the local graph.
+    const ArcDelay load_delay = delayDiff(gate_result.gateDelay(),
+                                         intrinsic_result.gateDelay(), this);
+    pt_graph->setSlew(pt_drvr_vertex, drvr_rf, ap_index, gate_result.drvrSlew());
+    annotateLoadDelays(pt_drvr_vertex, drvr_rf, gate_result, load_pin_index_map,
+                       load_delay, false, ap_index, pt_graph,
+                       &gate_result.drvrSlew());
+    arc_delay_calc->finishDrvrPin();
+  }
 }
 
 int 
@@ -1290,6 +1329,8 @@ LocalSta::findDriverArcDelays(PtVertex &drvr_pt_vertex,
       // ArcDcalcArg dcalc_args = makeArcDcalcArgs(drvr_pt_vertex,
                                   // multi_drvr_net, pt_edge, arc,
                                   // dcalc_ap, arc_delay_calc, pt_graph);
+      if (pt_graph->isMappedCellTrial())
+        throw std::runtime_error("mapped trial does not support multi-driver nets");
       printf("LocalSta::findDriverArcDelays multi-driver net not implemented\n");
       fflush(stdout);
     }
@@ -1326,7 +1367,8 @@ LocalSta::annotateLoadDelays(PtVertex &drvr_pt_vertex,
                              const ArcDelay &extra_delay,
                              bool merge,
                              DcalcAPIndex dcalc_ap,
-                             PtGraph *pt_graph)
+                             PtGraph *pt_graph,
+                             const Slew *input_drvr_slew)
 {
   Vertex *drvr_vertex = drvr_pt_vertex.vertex();
   bool load_changed = false;
@@ -1368,7 +1410,8 @@ LocalSta::annotateLoadDelays(PtVertex &drvr_pt_vertex,
                   drvr_slew_f * drvr_slew_f
                   + factor * factor * n.impulse_sq);
 
-              pt_graph->setWireArcDelay(wire_pt_edge, to_rf, ap_index, wire_delay);
+              pt_graph->setWireArcDelay(wire_pt_edge, to_rf, ap_index,
+                                       delaySum(extra_delay, wire_delay, this));
               const Slew &cur_slew = pt_graph->slew(load_pt_vertex, to_rf, ap_index);
               if (!merge || delayGreater(load_slew, cur_slew, slew_min_max, this)) {
                 pt_graph->setSlew(load_pt_vertex, to_rf, ap_index, load_slew);
@@ -1396,7 +1439,8 @@ LocalSta::annotateLoadDelays(PtVertex &drvr_pt_vertex,
             LocalDmpDelayCalc::elmoreWireDelaySlew(
                 elmore, drvr_slew, load_lib, to_rf, wire_delay, load_slew);
 
-            pt_graph->setWireArcDelay(wire_pt_edge, to_rf, ap_index, wire_delay);
+            pt_graph->setWireArcDelay(wire_pt_edge, to_rf, ap_index,
+                                     delaySum(extra_delay, wire_delay, this));
             const Slew &cur_slew = pt_graph->slew(load_pt_vertex, to_rf, ap_index);
             if (!merge || delayGreater(load_slew, cur_slew, slew_min_max, this)) {
               pt_graph->setSlew(load_pt_vertex, to_rf, ap_index, load_slew);
@@ -1406,6 +1450,7 @@ LocalSta::annotateLoadDelays(PtVertex &drvr_pt_vertex,
           }
         }
         // Fallback: wire delay = 0, load slew = driver slew
+        pt_graph->setWireArcDelay(wire_pt_edge, to_rf, ap_index, extra_delay);
         Slew drvr_slew = dcalc_result.drvrSlew();
         const Slew &cur_slew = pt_graph->slew(load_pt_vertex, to_rf, ap_index);
         if (!merge || delayGreater(drvr_slew, cur_slew, slew_min_max, this)) {
@@ -1422,12 +1467,55 @@ LocalSta::annotateLoadDelays(PtVertex &drvr_pt_vertex,
 
       ArcDelay wire_delay = dcalc_result.wireDelay(load_idx);
       Slew load_slew = dcalc_result.loadSlew(load_idx);
+      if (pt_graph->isMappedCellTrial()) {
+        // DMP/ElmoreCeff thresholdAdjust sees the frozen Network's old load
+        // library. Undo that conversion, then apply the mapped load library's
+        // thresholds. This matters for cross-technology slew units as well as
+        // the wire arrival at the receiving input threshold.
+        auto* target_port = pt_graph->mappedTrialPort(load_pin);
+        auto* source_port = network_->libertyPort(load_pin);
+        auto* drvr_port = drvr_pt_vertex.libertyPort();
+        auto* drvr_library = drvr_port ? drvr_port->libertyCell()->libertyLibrary()
+                                      : network_->defaultLibertyLibrary();
+        auto* source_library = source_port ? source_port->libertyCell()->libertyLibrary()
+                                          : network_->defaultLibertyLibrary();
+        auto* target_library = target_port ? target_port->libertyCell()->libertyLibrary()
+                                          : source_library;
+        if (target_library != source_library && drvr_library && source_library
+            && target_library) {
+          const double drvr_delta = drvr_library->slewUpperThreshold(to_rf)
+                                    - drvr_library->slewLowerThreshold(to_rf);
+          const auto scale = [&](const LibertyLibrary* library) {
+            return library == drvr_library ? 1.0
+                : ((library->slewUpperThreshold(to_rf) - library->slewLowerThreshold(to_rf))
+                   / library->slewDerateFromLibrary())
+                    / (drvr_delta / drvr_library->slewDerateFromLibrary());
+          };
+          const double old_scale = scale(source_library);
+          const double new_scale = scale(target_library);
+          if (!(drvr_delta > 0.0) || !(old_scale > 0.0) || !(new_scale > 0.0)
+              || !std::isfinite(old_scale) || !std::isfinite(new_scale))
+            throw std::runtime_error("mapped trial has invalid slew thresholds");
+          const double raw_slew = delayAsFloat(load_slew) / old_scale;
+          const auto delta = [&](const LibertyLibrary* library) {
+            if (library == drvr_library) return 0.0;
+            const double shift = raw_slew
+                * ((library->inputThreshold(to_rf) - drvr_library->outputThreshold(to_rf))
+                   / drvr_delta);
+            return to_rf == RiseFall::rise() ? shift : -shift;
+          };
+          wire_delay = delayAsFloat(wire_delay) - delta(source_library) + delta(target_library);
+          load_slew = raw_slew * new_scale;
+        }
+      }
       bool load_slew_annotated = load_vertex->slewAnnotated(to_rf, slew_min_max);
       bool drvr_slew_annotated = drvr_vertex
           ? drvr_vertex->slewAnnotated(to_rf, slew_min_max) : false;
       if (!load_slew_annotated) {
         if (drvr_slew_annotated) {
-          Slew drvr_slew = graph_->slew(drvr_vertex, to_rf, ap_index);
+          // Native input-driver seeding updates its driver before annotation.
+          Slew drvr_slew = input_drvr_slew
+              ? *input_drvr_slew : graph_->slew(drvr_vertex, to_rf, ap_index);
           pt_graph->setSlew(load_pt_vertex, to_rf, ap_index, drvr_slew);
           load_changed = true;
         } else {
@@ -1443,7 +1531,7 @@ LocalSta::annotateLoadDelays(PtVertex &drvr_pt_vertex,
           ? graph_->wireDelayAnnotated(wire_edge, to_rf, ap_index) : false;
       if (!wire_annotated) {
         const ArcDelay &delay = pt_graph->wireArcDelay(wire_pt_edge, to_rf, ap_index);
-        ArcDelay wire_delay_extra = wire_delay + extra_delay;
+        ArcDelay wire_delay_extra = delaySum(extra_delay, wire_delay, this);
         const MinMax *delay_min_max = pt_graph->minMax();
         if (!merge || delayGreater(wire_delay_extra, delay, delay_min_max, this)) {
           pt_graph->setWireArcDelay(wire_pt_edge, to_rf, ap_index, wire_delay_extra);
@@ -1516,7 +1604,9 @@ LocalSta::computeVirtualLoadCap(PtVertex &drvr_pt_vertex,
   // Driver output pin capacitance (self-cap of the output port)
   LibertyPort *drvr_port = nullptr;
   const Pin *drvr_pin = drvr_pt_vertex.pin();
-  if (drvr_pin) {
+  if (pt_graph->isMappedCellTrial()) {
+    drvr_port = drvr_pt_vertex.libertyPort();
+  } else if (drvr_pin) {
     drvr_port = network_->libertyPort(drvr_pin);
   } else {
     drvr_port = drvr_pt_vertex.libertyPort();
@@ -1539,7 +1629,12 @@ LocalSta::computeVirtualLoadCap(PtVertex &drvr_pt_vertex,
       LibertyPort *load_port = nullptr;
       std::string load_name;
 
-      if (load_pt_vertex.hasBase()) {
+      if (pt_graph->isMappedCellTrial()) {
+        load_port = load_pt_vertex.libertyPort();
+        const Pin* pin = load_pt_vertex.pin();
+        if (!load_port && pin && network_->isTopLevelPort(pin))
+          load_cap += corner->sdc()->portExtCap(network_->port(pin), drvr_rf, min_max);
+      } else if (load_pt_vertex.hasBase()) {
         // Real load: use network->libertyPort
         if (const Pin *load_pin = load_pt_vertex.pin()) {
           load_port = network_->libertyPort(load_pin);
@@ -2069,7 +2164,7 @@ LocalSta::localParasiticLoad(PtVertex &drvr_pt_vertex,
 
   // Use global STA's reduced parasitic (PiPoleResidue2/PiElmore) if available.
   // This matches the global STA's delay calculator for consistent results.
-  if (drvr_pin) {
+  if (drvr_pin && !pt_graph->isMappedCellTrial()) {
     sta::Scene *scene = pt_graph->scene();
     sta::Parasitics *parasitics = scene->parasitics(pt_graph->minMax());
     if (parasitics) {
@@ -2118,14 +2213,30 @@ LocalSta::localParasiticLoad(PtVertex &drvr_pt_vertex,
     }
   }
 
+  // A mapped trial must never fall back to reduced global capacitances,
+  // which still include the source master's input/output pins.
+  if (pt_graph->isMappedCellTrial()) {
+    load_cap = computeVirtualLoadCap(drvr_pt_vertex, rf, dcalc_ap, pt_graph);
+    if (drvr_pin && network_->net(drvr_pin)) {
+      bool has_net_load;
+      float fanout, old_pin_cap, wire_cap;
+      netCaps(drvr_pin, rf, pt_graph->scene(), pt_graph->minMax(),
+              old_pin_cap, wire_cap, fanout, has_net_load);
+      load_cap += wire_cap;
+    }
+    return;
+  }
+
   // Virtual driver or driver with virtual buffer downstream
   if (drvr_pt_vertex.hasVirtualBuffer()) {
     load_cap = computeVirtualLoadCap(drvr_pt_vertex, rf, dcalc_ap, pt_graph);
     return;
   }
 
-  // Fallback: use netCaps (requires net)
-  if (!drvr_pin || network_->net(drvr_pin) == nullptr)
+  // Top-level pins have no outer net in dbNetwork; netCaps follows their
+  // terms to include the connected loads, as in GraphDelayCalc.
+  if (!drvr_pin || (!network_->isTopLevelPort(drvr_pin)
+                    && network_->net(drvr_pin) == nullptr))
     return;
   bool has_net_load;
   float fanout;
@@ -2155,7 +2266,7 @@ LocalSta::printLocalParasitics(PtGraph *pt_graph) const
           if (pt_pi) {
             printf("%s::printLocalParasitics: Pin %s, RF %s, AP %u, with cap %f\n",
                    debug_label_.c_str(),
-                   network_->name(vertex->pin()),
+                   network_->name(vertex->pin()).c_str(),
                    rf->to_string().c_str(),
                    ap_index,
                    pt_pi->capacitance() * 1.0e15);
@@ -2187,7 +2298,7 @@ LocalSta::printParasitics(PtGraph *pt_graph) const
           float load_cap = local_parasitics_->capacitance(parasitic);
           if (parasitic != nullptr) {
             printf("LOCALSTA::printLocalParasitics: Pin %s, RF %s, AP %u, with cap %f\n",
-                   network_->name(vertex->pin()),
+                   network_->name(vertex->pin()).c_str(),
                    rf->to_string().c_str(),
                    ap_index,
                    load_cap * 1.0e15);
@@ -2305,8 +2416,8 @@ LocalSta::getPinMaxSlewLimit(sta::Pin *pin, sta::LibertyCell *lib_cell)
   odb::dbMTerm *db_iterm = network->staToDb(sta_port);
   if (db_iterm == nullptr) {
     printf("LocalSta::getPinMaxSlewLimit: db_iterm is nullptr for port %s of pin %s\n",
-           port_name,
-           network->name(pin));
+           port_name.c_str(),
+           network->name(pin).c_str());
     // If DB mapping fails, try to get limit from Liberty port directly
     sta::LibertyLibrary *lib = network->defaultLibertyLibrary();
     bool max_slew_exists;
@@ -2331,7 +2442,7 @@ LocalSta::getPinMaxSlewLimit(sta::Pin *pin, sta::LibertyCell *lib_cell)
     }
   } else {
     printf("LocalSta::getPinMaxSlewLimit: Supply pin %s, setting max_slew to INF\n",
-           network->name(pin));
+           network->name(pin).c_str());
     max_slew = INF;
   }
   return max_slew;
@@ -2351,8 +2462,8 @@ LocalSta::getPinMaxCapLimit(sta::Pin *pin, sta::LibertyCell *lib_cell)
   odb::dbMTerm *db_iterm = network->staToDb(sta_port);
   if (db_iterm == nullptr) {
     printf("LocalSta::getPinMaxCapLimit: db_iterm is nullptr for port %s of pin %s\n",
-           port_name,
-           network->name(pin));
+           port_name.c_str(),
+           network->name(pin).c_str());
     // If DB mapping fails, try to get limit from Liberty port directly
     sta::LibertyLibrary *lib = network->defaultLibertyLibrary();
     float max_cap = 0.0;
@@ -2846,7 +2957,7 @@ LocalSta::printPerSinkArrivals(PtGraph *pt_graph, const char *label)
       float global_slack = global_req - global_arr;
 
       printf("        %-40s %+10.1f %+10.1f %+10.1f %+10.1f %+10.1f\n",
-             network_->name(sta_vertex->pin()),
+             network_->name(sta_vertex->pin()).c_str(),
              local_arr * 1e12, global_arr * 1e12,
              (local_arr - global_arr) * 1e12,
              global_req * 1e12, global_slack * 1e12);

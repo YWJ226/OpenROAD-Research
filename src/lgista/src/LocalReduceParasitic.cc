@@ -218,6 +218,14 @@ LocalReduceToPi::localPinCapacitance(ParasiticNode *node)
   float pin_cap = 0.0;
 
   if (pin) {
+    if (pt_graph_ && pt_graph_->isMappedCellTrial()) {
+      if (auto* port = pt_graph_->mappedTrialPort(pin)) {
+        if (includes_pin_caps_)
+          throw std::runtime_error("mapped trial requires parasitics without embedded pin capacitances");
+        pin_caps_one_value_ &= port->capacitanceIsOneValue();
+        return port->capacitance(rf_, min_max_);
+      }
+    }
     // Top-level ports have no liberty cell; handle them via SDC directly.
     if (network_->isTopLevelPort(pin)) {
       Port *port = network_->port(pin);

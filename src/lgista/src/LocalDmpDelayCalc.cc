@@ -40,18 +40,28 @@ using sta::TimingArc;
 //
 // Static counters accumulate gateDelay call count + cumulative wall-time
 // across ALL LocalDmpDelayCalc instances (LR's ParallelVisitor spawns one
-// per worker thread). Gated by LRF_DCALC_STATS=1 to keep production
-// silent; the atexit handler runs once at process exit (registered on
-// the first construction via call_once).
+// per worker thread). LRF_DCALC_STATS=1 enables both collection and
+// printing; disabled calls perform no clock reads or atomic updates.
+// The atexit handler is registered on first construction via call_once.
 ////////////////////////////////////////////////////////////////
 namespace {
 std::atomic<uint64_t> g_dmp_gate_calls{0};
 std::atomic<uint64_t> g_dmp_gate_ns{0};
 
+// Read once when the first calculator is constructed, before worker calls.
+// Set LRF_DCALC_STATS before starting OpenROAD; runtime toggles are not used.
+bool dmpStatsEnabled()
+{
+  static const bool enabled = []() {
+    const char *s = std::getenv("LRF_DCALC_STATS");
+    return s && s[0] == '1';
+  }();
+  return enabled;
+}
+
 void printDmpStats()
 {
-  const char *s = std::getenv("LRF_DCALC_STATS");
-  if (!s || s[0] != '1') return;
+  if (!dmpStatsEnabled()) return;
   const uint64_t calls = g_dmp_gate_calls.load(std::memory_order_relaxed);
   const uint64_t ns    = g_dmp_gate_ns.load(std::memory_order_relaxed);
   const double  ms    = ns / 1.0e6;
@@ -65,7 +75,10 @@ void printDmpStats()
 void registerDmpAtExitOnce()
 {
   static std::once_flag once;
-  std::call_once(once, []() { std::atexit(&printDmpStats); });
+  std::call_once(once, []() {
+    (void)dmpStatsEnabled();
+    std::atexit(&printDmpStats);
+  });
 }
 } // namespace
 
@@ -158,6 +171,11 @@ LocalDmpDelayCalc::gateDelay(const Pin *drvr_pin,
                              const LoadPinIndexMap &load_pin_index_map,
                              const sta::Scene *scene, const sta::MinMax *min_max)
 {
+  if (!dmpStatsEnabled()) {
+    return inner_->gateDelay(drvr_pin, arc, in_slew, load_cap, parasitic,
+                             load_pin_index_map, scene, min_max);
+  }
+
   const auto t0 = std::chrono::steady_clock::now();
   ArcDcalcResult r = inner_->gateDelay(drvr_pin, arc, in_slew, load_cap,
                                        parasitic, load_pin_index_map, scene, min_max);

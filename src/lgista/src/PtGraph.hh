@@ -39,6 +39,171 @@ static constexpr EdgeId pt_edge_id_null = 0;
 static constexpr VertexId pt_vertex_id_null = 0;
 
 
+class PtEdge {
+public:
+  PtEdge();
+  ~PtEdge() = default;
+
+  void init(sta::Edge *edge,
+            sta::VertexId pt_from,
+            sta::VertexId pt_to);
+  void initVirtual(sta::VertexId pt_from, sta::VertexId pt_to,
+                   sta::TimingArcSet *arc_set, bool is_wire);
+
+  sta::ArcDelay *arcDelays() { return arc_delays_.empty() ? nullptr : arc_delays_.data(); }
+  const sta::ArcDelay *arcDelays() const { return arc_delays_.empty() ? nullptr : arc_delays_.data(); }
+  size_t arcDelayCount() const { return arc_delays_.size(); }
+  sta::Edge *edge() { return edge_; }
+  const sta::Edge *edge() const { return edge_; }
+  bool hasBase() const { return edge_ != nullptr; }
+  bool isWire() const { return edge_ ? edge_->isWire() : is_wire_; }
+  bool isVirtual() const {
+    return type_ == PtEdgeType::VirtualGateEdge
+        || type_ == PtEdgeType::VirtualWireEdge;
+  }
+  sta::VertexId ptFromId() const { return pt_from_; }
+  sta::VertexId ptToId() const { return pt_to_; }
+  const sta::TimingRole *role() const;
+  PtEdgeType type() const { return type_; }
+  void setType(PtEdgeType type) { type_ = type; }
+
+  sta::EdgeId objectIdx() const { return object_idx_; }
+  void setObjectIdx(sta::EdgeId idx);
+  void setTimingArcSet(sta::TimingArcSet *timing_arc_set) { timing_arc_set_ = timing_arc_set; }
+  sta::TimingArcSet *timingArcSet() const { return timing_arc_set_; }
+
+  // LM access: returns local arc_lms_
+  LMValue *arcLms();
+  const LMValue *arcLms() const;
+  void setArcLms(const std::vector<LMValue> &lms);
+
+  // Delay sensitivity ∂delay/∂slew per arc per AP (finite-difference computed).
+  float *delayDiffs() { return delay_diffs_.empty() ? nullptr : delay_diffs_.data(); }
+  const float *delayDiffs() const { return delay_diffs_.empty() ? nullptr : delay_diffs_.data(); }
+  void setDelayDiffs(const std::vector<float> &diffs) { delay_diffs_ = diffs; }
+
+  // Sibling arc skipping: insignificant sibling arcs can be excluded
+  // from cost computation and delay evaluation to reduce runtime.
+  // Native delay calculation includes condition-disabled models in slew
+  // aggregation; arrival/required propagation and the objective exclude them.
+  bool trialSearchEnabled() const { return trial_search_enabled_; }
+  void setTrialSearchEnabled(bool value) { trial_search_enabled_ = value; }
+  bool isSiblingSkipped() const { return sibling_skipped_; }
+  void setSiblingSkipped(bool v) { sibling_skipped_ = v; }
+
+protected:
+  void setArcDelays(sta::ArcDelay *arc_delay, size_t delay_count);
+  void copyInfoFromEdge(size_t ap_count);
+
+  sta::Edge *edge_{};
+  std::vector<sta::ArcDelay> arc_delays_;
+  std::vector<LMValue> arc_lms_;
+  std::vector<float> delay_diffs_;
+  bool is_wire_{false};
+  bool sibling_skipped_{false};
+  bool trial_search_enabled_{true};
+  sta::EdgeId vertex_out_next_{};
+  sta::EdgeId vertex_out_prev_{};
+  sta::EdgeId vertex_in_link_{};
+  sta::EdgeId object_idx_{};
+  sta::VertexId pt_from_{};
+  sta::VertexId pt_to_{};
+  sta::TimingArcSet *timing_arc_set_{nullptr};
+  PtEdgeType type_{PtEdgeType::None};
+
+private:
+  friend class PtGraph;
+  friend class PtVertex;
+  friend class PtVertexInEdgeIterator;
+  friend class PtVertexOutEdgeIterator;
+  friend class LrRebuffer;
+};
+
+
+class PtVertex {
+public:
+  PtVertex();
+  ~PtVertex();
+  PtVertex(PtVertex &&other) noexcept;
+  PtVertex &operator=(PtVertex &&other) noexcept;
+  PtVertex(const PtVertex &) = delete;
+  PtVertex &operator=(const PtVertex &) = delete;
+
+  void init(sta::Vertex *vertex);
+  void initVirtual(sta::LibertyCell *cell, sta::LibertyPort *port,
+                   bool is_driver, bool is_load);
+  // Proxy vertex: a real sta::Vertex used for tag_bldr init on virtual vertices.
+  // Set by the caller (e.g., LrRebuffer) to the driver vertex of the net being buffered.
+  void setProxyVertex(sta::Vertex *v) { proxy_vertex_ = v; }
+  sta::Vertex *proxyVertex() const { return proxy_vertex_; }
+
+  sta::VertexId objectIdx() const { return object_idx_; }
+  void setObjectIdx(sta::VertexId idx);
+  sta::Vertex *vertex() { return vertex_; }
+  sta::Pin *pin() { return vertex_ ? vertex_->pin() : nullptr; }
+  sta::Vertex *vertex() const { return vertex_; }
+  bool hasBase() const { return vertex_ != nullptr; }
+  sta::LibertyPort *libertyPort() const { return liberty_port_; }
+  void setLibertyPort(sta::LibertyPort *port) { liberty_port_ = port; }
+  sta::LibertyCell *libertyCell() const;
+  float level() const { return level_; }
+  void setLevel(float lvl) { level_ = lvl; }
+  sta::Slew *slews() { return slews_.empty() ? nullptr : slews_.data(); }
+  bool hasFanin() const;
+  bool hasFanout() const;
+  const sta::Slew *slews() const { return slews_.empty() ? nullptr : slews_.data(); }
+  size_t slewCount() const { return slews_.size(); }
+  void resizeSlews(size_t slew_count);
+  bool isRoot() const;
+  void copyInfoFromVertex(size_t ap_count, size_t slew_rf_count,
+                          sta::Graph *graph);
+  void setType(PtVertexType type) { type_ = type; }
+  PtVertexType type() const { return type_; }
+  sta::Pin *pin() const { return vertex_ ? vertex_->pin() : nullptr; }
+  void setTagGroupIndex(int index) { tag_group_index_ = index; }
+  size_t tagGroupIndex() const { return tag_group_index_; }
+  sta::Path *paths() const { return paths_; }
+  void setPaths(sta::Path *paths);
+  void setIsDriver(bool is_driver) { is_driver_ = is_driver; }
+  bool isDriver() const { return is_driver_; }
+  void setIsLoad(bool is_load) { is_load_ = is_load; }
+  bool isLoad() const { return is_load_; }
+  bool isVirtual() const {
+    return type_ == PtVertexType::VirtualInput
+        || type_ == PtVertexType::VirtualOutput;
+  }
+  // True when this driver's downstream loads include a virtual buffer,
+  // meaning the original parasitic is invalid and load_cap should be recomputed.
+  void setHasVirtualBuffer(bool v) { has_virtual_buffer_ = v; }
+  bool hasVirtualBuffer() const { return has_virtual_buffer_; }
+
+protected:
+  sta::Vertex *vertex_{nullptr};
+  sta::Vertex *proxy_vertex_{nullptr};
+  sta::LibertyPort *liberty_port_{nullptr};
+  sta::LibertyCell *liberty_cell_{nullptr};
+  float level_{-1.0f};
+  std::vector<sta::Arrival> arrivals_;
+  sta::VertexId object_idx_{pt_vertex_id_null};
+  sta::EdgeId out_edges_{pt_edge_id_null};
+  sta::EdgeId in_edges_{pt_edge_id_null};
+  std::vector<sta::Slew> slews_;
+  bool is_root_{};
+  PtVertexType type_{PtVertexType::None};
+  int tag_group_index_ {static_cast<int>(sta::tag_group_index_max)};
+  sta::Path *paths_ = nullptr;
+  bool is_driver_{false};
+  bool is_load_{false};
+  bool has_virtual_buffer_{false};
+
+private:
+  friend class PtGraph;
+  friend class PtEdge;
+  friend class PtVertexInEdgeIterator;
+  friend class PtVertexOutEdgeIterator;
+  friend class LocalSta;
+  friend class LrRebuffer;
+};
 class PtGraph {
 public:
   explicit PtGraph(sta::Sta *sta);
@@ -76,6 +241,7 @@ public:
   sta::TagGroup *tagGroup(const PtVertex &pt_vertex) const;
 
   sta::EdgeId makeEdge(sta::Edge *edge, sta::VertexId pt_from, sta::VertexId pt_to);
+  sta::EdgeId makeTrialBaseEdge(sta::Edge* edge, sta::VertexId from, sta::VertexId to);
   sta::VertexId makeVertex(sta::Vertex *vertex);
   sta::VertexId makeVirtualVertex(sta::LibertyCell *cell, sta::LibertyPort *port,
                                   bool is_driver, bool is_load, PtVertexType type);
@@ -195,6 +361,16 @@ public:
   sta::LibertyCell *refGate() const { return ref_lib_cell_; }
   sta::Instance *refInstance() const { return ref_inst_; }
 
+  void setMappedCellTrial(
+      const std::unordered_map<const sta::Pin*, sta::LibertyPort*>& ports) {
+    mapped_trial_ports_ = ports;
+  }
+  bool isMappedCellTrial() const { return !mapped_trial_ports_.empty(); }
+  sta::LibertyPort* mappedTrialPort(const sta::Pin* pin) const {
+    const auto it = mapped_trial_ports_.find(pin);
+    return it == mapped_trial_ports_.end() ? nullptr : it->second;
+  }
+
   // Precheck mode: skip SiblingEdge gateDelay in findDriverDelays1.
   // Sibling LM contribution is recovered separately via
   // siblingDeltaDelayLmSum(): Σ delay_diff × Δin_slew × arc_lm.
@@ -293,6 +469,7 @@ protected:
   size_t slew_rf_count_{};
   sta::Instance *ref_inst_ = nullptr;
   sta::LibertyCell *ref_lib_cell_ = nullptr;
+  std::unordered_map<const sta::Pin*, sta::LibertyPort*> mapped_trial_ports_;
   bool precheck_mode_ = false;
   bool final_eval_mode_ = false;
   sta::Scene *scene_ = nullptr;
@@ -318,165 +495,7 @@ private:
   friend class LocalSta;
 };
 
-class PtEdge {
-public:
-  PtEdge();
-  ~PtEdge() = default;
 
-  void init(sta::Edge *edge,
-            sta::VertexId pt_from,
-            sta::VertexId pt_to);
-  void initVirtual(sta::VertexId pt_from, sta::VertexId pt_to,
-                   sta::TimingArcSet *arc_set, bool is_wire);
-
-  sta::ArcDelay *arcDelays() { return arc_delays_.empty() ? nullptr : arc_delays_.data(); }
-  const sta::ArcDelay *arcDelays() const { return arc_delays_.empty() ? nullptr : arc_delays_.data(); }
-  size_t arcDelayCount() const { return arc_delays_.size(); }
-  sta::Edge *edge() { return edge_; }
-  const sta::Edge *edge() const { return edge_; }
-  bool hasBase() const { return edge_ != nullptr; }
-  bool isWire() const { return edge_ ? edge_->isWire() : is_wire_; }
-  bool isVirtual() const {
-    return type_ == PtEdgeType::VirtualGateEdge
-        || type_ == PtEdgeType::VirtualWireEdge;
-  }
-  sta::VertexId ptFromId() const { return pt_from_; }
-  sta::VertexId ptToId() const { return pt_to_; }
-  const sta::TimingRole *role() const;
-  PtEdgeType type() const { return type_; }
-  void setType(PtEdgeType type) { type_ = type; }
-
-  sta::EdgeId objectIdx() const { return object_idx_; }
-  void setObjectIdx(sta::EdgeId idx);
-  void setTimingArcSet(sta::TimingArcSet *timing_arc_set) { timing_arc_set_ = timing_arc_set; }
-  sta::TimingArcSet *timingArcSet() const { return timing_arc_set_; }
-
-  // LM access: returns local arc_lms_
-  LMValue *arcLms();
-  const LMValue *arcLms() const;
-  void setArcLms(const std::vector<LMValue> &lms);
-
-  // Delay sensitivity ∂delay/∂slew per arc per AP (finite-difference computed).
-  float *delayDiffs() { return delay_diffs_.empty() ? nullptr : delay_diffs_.data(); }
-  const float *delayDiffs() const { return delay_diffs_.empty() ? nullptr : delay_diffs_.data(); }
-  void setDelayDiffs(const std::vector<float> &diffs) { delay_diffs_ = diffs; }
-
-  // Sibling arc skipping: insignificant sibling arcs can be excluded
-  // from cost computation and delay evaluation to reduce runtime.
-  bool isSiblingSkipped() const { return sibling_skipped_; }
-  void setSiblingSkipped(bool v) { sibling_skipped_ = v; }
-
-protected:
-  void setArcDelays(sta::ArcDelay *arc_delay, size_t delay_count);
-  void copyInfoFromEdge(size_t ap_count);
-
-  sta::Edge *edge_{};
-  std::vector<sta::ArcDelay> arc_delays_;
-  std::vector<LMValue> arc_lms_;
-  std::vector<float> delay_diffs_;
-  bool is_wire_{false};
-  bool sibling_skipped_{false};
-  sta::EdgeId vertex_out_next_{};
-  sta::EdgeId vertex_out_prev_{};
-  sta::EdgeId vertex_in_link_{};
-  sta::EdgeId object_idx_{};
-  sta::VertexId pt_from_{};
-  sta::VertexId pt_to_{};
-  sta::TimingArcSet *timing_arc_set_{nullptr};
-  PtEdgeType type_{PtEdgeType::None};
-
-private:
-  friend class PtGraph;
-  friend class PtVertex;
-  friend class PtVertexInEdgeIterator;
-  friend class PtVertexOutEdgeIterator;
-  friend class LrRebuffer;
-};
-
-class PtVertex {
-public:
-  PtVertex();
-  ~PtVertex();
-  PtVertex(PtVertex &&other) noexcept;
-  PtVertex &operator=(PtVertex &&other) noexcept;
-  PtVertex(const PtVertex &) = delete;
-  PtVertex &operator=(const PtVertex &) = delete;
-
-  void init(sta::Vertex *vertex);
-  void initVirtual(sta::LibertyCell *cell, sta::LibertyPort *port,
-                   bool is_driver, bool is_load);
-  // Proxy vertex: a real sta::Vertex used for tag_bldr init on virtual vertices.
-  // Set by the caller (e.g., LrRebuffer) to the driver vertex of the net being buffered.
-  void setProxyVertex(sta::Vertex *v) { proxy_vertex_ = v; }
-  sta::Vertex *proxyVertex() const { return proxy_vertex_; }
-
-  sta::VertexId objectIdx() const { return object_idx_; }
-  void setObjectIdx(sta::VertexId idx);
-  sta::Vertex *vertex() { return vertex_; }
-  sta::Pin *pin() { return vertex_ ? vertex_->pin() : nullptr; }
-  sta::Vertex *vertex() const { return vertex_; }
-  bool hasBase() const { return vertex_ != nullptr; }
-  sta::LibertyPort *libertyPort() const { return liberty_port_; }
-  void setLibertyPort(sta::LibertyPort *port) { liberty_port_ = port; }
-  sta::LibertyCell *libertyCell() const;
-  float level() const { return level_; }
-  void setLevel(float lvl) { level_ = lvl; }
-  sta::Slew *slews() { return slews_.empty() ? nullptr : slews_.data(); }
-  bool hasFanin() const;
-  bool hasFanout() const;
-  const sta::Slew *slews() const { return slews_.empty() ? nullptr : slews_.data(); }
-  size_t slewCount() const { return slews_.size(); }
-  void resizeSlews(size_t slew_count);
-  bool isRoot() const;
-  void copyInfoFromVertex(size_t ap_count, size_t slew_rf_count,
-                          sta::Graph *graph);
-  void setType(PtVertexType type) { type_ = type; }
-  PtVertexType type() const { return type_; }
-  sta::Pin *pin() const { return vertex_ ? vertex_->pin() : nullptr; }
-  void setTagGroupIndex(int index) { tag_group_index_ = index; }
-  size_t tagGroupIndex() const { return tag_group_index_; }
-  sta::Path *paths() const { return paths_; }
-  void setPaths(sta::Path *paths);
-  void setIsDriver(bool is_driver) { is_driver_ = is_driver; }
-  bool isDriver() const { return is_driver_; }
-  void setIsLoad(bool is_load) { is_load_ = is_load; }
-  bool isLoad() const { return is_load_; }
-  bool isVirtual() const {
-    return type_ == PtVertexType::VirtualInput
-        || type_ == PtVertexType::VirtualOutput;
-  }
-  // True when this driver's downstream loads include a virtual buffer,
-  // meaning the original parasitic is invalid and load_cap should be recomputed.
-  void setHasVirtualBuffer(bool v) { has_virtual_buffer_ = v; }
-  bool hasVirtualBuffer() const { return has_virtual_buffer_; }
-
-protected:
-  sta::Vertex *vertex_{nullptr};
-  sta::Vertex *proxy_vertex_{nullptr};
-  sta::LibertyPort *liberty_port_{nullptr};
-  sta::LibertyCell *liberty_cell_{nullptr};
-  float level_{-1.0f};
-  std::vector<sta::Arrival> arrivals_;
-  sta::VertexId object_idx_{pt_vertex_id_null};
-  sta::EdgeId out_edges_{pt_edge_id_null};
-  sta::EdgeId in_edges_{pt_edge_id_null};
-  std::vector<sta::Slew> slews_;
-  bool is_root_{};
-  PtVertexType type_{PtVertexType::None};
-  int tag_group_index_ {static_cast<int>(sta::tag_group_index_max)};
-  sta::Path *paths_ = nullptr;
-  bool is_driver_{false};
-  bool is_load_{false};
-  bool has_virtual_buffer_{false};
-
-private:
-  friend class PtGraph;
-  friend class PtEdge;
-  friend class PtVertexInEdgeIterator;
-  friend class PtVertexOutEdgeIterator;
-  friend class LocalSta;
-  friend class LrRebuffer;
-};
 
 class PtVertexInEdgeIterator {
 public:

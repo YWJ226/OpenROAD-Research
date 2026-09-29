@@ -34,7 +34,7 @@ namespace lgista {
 
 using namespace sta;
 
-class ConcreteParasitic;
+using sta::ConcreteParasitic;
 class ConcreteParasiticNetwork;
 class TaskArranger;
 typedef std::map<const Pin*, ConcreteParasitic**> ConcreteParasiticMap;
@@ -351,14 +351,19 @@ protected:
                           PtGraph *pt_graph);
   int findPortIndex(const LibertyCell *cell,
                     const LibertyPort *port);
-  void findInputDriverDelay(const LibertyCell *drvr_cell,
-                            const Pin *drvr_pin,
-                            Vertex *drvr_vertex,
-                            const RiseFall *rf,
-                            const LibertyPort *from_port,
-                            float *from_slews,
-                            const LibertyPort *to_port,
-                            DcalcAPIndex dcalc_ap);
+  void findLocalInputDriverDelay(const LibertyCell *drvr_cell,
+                                 PtVertex &pt_drvr_vertex,
+                                 const RiseFall *rf,
+                                 const LibertyPort *from_port,
+                                 float *from_slews,
+                                 const LibertyPort *to_port,
+                                 ArcDelayCalc *arc_delay_calc,
+                                 PtGraph *pt_graph);
+  void findLocalInputArcDelay(PtVertex &pt_drvr_vertex,
+                              const TimingArc *arc,
+                              float from_slew,
+                              ArcDelayCalc *arc_delay_calc,
+                              PtGraph *pt_graph);
   LoadPinIndexMap makeLoadPinIndexMap(Vertex *drvr_vertex);
   LoadPinIndexMap makeLoadPinIndexMap(PtVertex &drvr_pt_vertex, PtGraph *pt_graph);
   MultiDrvrNet *findMultiDrvrNet(Vertex *drvr_vertex);
@@ -425,7 +430,8 @@ protected:
                           const ArcDelay &extra_delay,
                           bool merge,
                           DcalcAPIndex dcalc_ap,
-                          PtGraph *pt_graph);
+                          PtGraph *pt_graph,
+                          const Slew *input_drvr_slew = nullptr);
   float computeVirtualLoadCap(PtVertex &drvr_pt_vertex,
                               const RiseFall *drvr_rf,
                               DcalcAPIndex dcalc_ap,

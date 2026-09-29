@@ -20,12 +20,16 @@
 #include <cstddef>
 #include <memory>
 #include <string>
+#include <unordered_map>
 
 namespace sta {
 class dbSta;
 class Instance;
 class ArcDelayCalc;
 class Parasitics;
+class Pin;
+class LibertyCell;
+class LibertyPort;
 }  // namespace sta
 
 namespace lgista {
@@ -44,6 +48,10 @@ class LocalGraphIsta {
   // Bring the global timing graph up to date (arrivals + requireds). Safe to
   // call multiple times; cheap when nothing changed.
   void prepare();
+
+  // Allocate private state against an already updated STA graph. Unlike
+  // prepare()/analyzeOnly(), this performs no timing propagation or tag work.
+  void initializeReadOnly();
 
   // Compute: build the local timing graph around one instance and propagate
   // delay / arrival / required through it. Returns the local graph (owned by
@@ -78,6 +86,16 @@ class LocalGraphIsta {
   // does NOT call prepare() — the caller owns keeping the global graph up to
   // date. Returns nullptr if the instance has no usable driver.
   std::unique_ptr<PtGraph> analyzeOnly(sta::Instance* inst, int depth = 1);
+
+  // Read-only mapped-cell trial in the default scene, both min/max APs.
+  // Rebuilds internal combinational arcs and uses mapped target input caps.
+  // The explicit pin map must cover every signal port, including same-master
+  // identity trials. Throws on unsupported models, conditions, or tag topology.
+  // No global timing writeback or database edits. Candidate RC must already be
+  // in this engine's localParasiticsContainer().
+  std::unique_ptr<PtGraph> analyzeTrial(
+      sta::Instance* inst, int depth, sta::LibertyCell* target,
+      const std::unordered_map<const sta::Pin*, sta::LibertyPort*>& overrides);
 
   // Granular wall-clock sub-step timings optionally filled by analyzeOnly
   // (set the out-pointer; only populated when non-null). All times in ms.
