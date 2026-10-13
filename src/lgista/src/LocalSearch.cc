@@ -168,7 +168,7 @@ LocalArrivalVisitor::~LocalArrivalVisitor()
 
 void LocalArrivalVisitor::init0()
 {
-  tag_bldr_ = new TagGroupBldr(true, this);
+  tag_bldr_ = std::make_unique<TagGroupBldr>(true, this);
 }
 
 void 
@@ -257,23 +257,23 @@ LocalArrivalVisitor::findVertexArrival(PtVertex &pt_vertex)
 
   if (!network_->isTopLevelPort(pin)
       && modes()[0]->sdc()->hasInputDelay(pin)) {
-    search_->seedInputSegmentArrival(pin, vertex, modes()[0], tag_bldr_);
+    search_->seedInputSegmentArrival(pin, vertex, modes()[0], tag_bldr_.get());
   }
 
   if (modes()[0]->sdc()->isPathDelayInternalFrom(pin)) {
-    search_->makeUnclkedPaths(vertex, false, true, tag_bldr_, modes()[0]);
+    search_->makeUnclkedPaths(vertex, false, true, tag_bldr_.get(), modes()[0]);
   }
   if (modes()[0]->sdc()->isLeafPinClock(pin)) {
-    search_->seedClkArrivals(pin, modes()[0], tag_bldr_);
+    search_->seedClkArrivals(pin, modes()[0], tag_bldr_.get());
   }
 
   bool is_clk = tag_bldr_->hasClkTag();
   if (vertex->isRegClk() && !is_clk) {
-    search_->makeUnclkedPaths(vertex, true, false, tag_bldr_, modes()[0]);
+    search_->makeUnclkedPaths(vertex, true, false, tag_bldr_.get(), modes()[0]);
   }
 
   if (arrival_changed)
-    localSetVertexArrivals(pt_vertex, tag_bldr_);
+    localSetVertexArrivals(pt_vertex, tag_bldr_.get());
 }
 
 void
@@ -299,7 +299,7 @@ LocalArrivalVisitor::findVirtualVertexArrival(PtVertex &pt_vertex)
 
   localVisitFaninPaths(pt_vertex);
 
-  localSetVertexArrivals(pt_vertex, tag_bldr_);
+  localSetVertexArrivals(pt_vertex, tag_bldr_.get());
 }
 
 void
@@ -713,19 +713,19 @@ LocalArrivalVisitor::localSetVertexArrivals(PtVertex &pt_vertex, TagGroupBldr *t
     }
   } else {
     size_t path_count = prev_tag_group->pathCount();
-    std::vector<Required> saved_reqs(path_count);
+    saved_reqs_.resize(path_count);
     std::vector<Path> saved_paths;
     if (pt_graph_->isMappedCellTrial())
       saved_paths.assign(prev_paths, prev_paths + path_count);
     for (size_t i = 0; i < path_count; i++)
-      saved_reqs[i] = prev_paths[i].required();
+      saved_reqs_[i] = prev_paths[i].required();
     tag_bldr->copyPaths(prev_tag_group, prev_paths);
     for (size_t i = 0; i < path_count; i++) {
       if (pt_graph_->isMappedCellTrial()
           && saved_paths[i].dcalcAnalysisPtIndex(this) != pt_graph_->apIndex())
         prev_paths[i] = saved_paths[i];
       else
-        prev_paths[i].setRequired(saved_reqs[i]);
+        prev_paths[i].setRequired(saved_reqs_[i]);
     }
   }
 }
@@ -831,7 +831,7 @@ LocalRequiredVisitor::~LocalRequiredVisitor()
 void 
 LocalRequiredVisitor::findLocalRequireds()
 {
-  std::vector<size_t> vertex_ids = pt_graph_->sortedVertexIds();
+  const auto &vertex_ids = pt_graph_->sortedVertexIds();
   for (size_t i = vertex_ids.size(); i > 0; --i) {
     findVertexRequired(vertex_ids[i - 1]);
   }
@@ -906,8 +906,11 @@ bool LocalRequiredVisitor::localVisitFromToPath(
     size_t path_index = ptPathIndex(from_pt_vertex, from_path);
     const MinMax *req_min = min_max->opposite();
     TagGroup *to_tag_group = pt_graph_->tagGroup(to_pt_vertex);
-    if (to_tag_group && to_tag_group->hasTag(to_tag)) {
-      size_t to_path_index = to_tag_group->pathIndex(to_tag);
+    size_t to_path_index = 0;
+    bool to_path_exists = false;
+    if (to_tag_group)
+      to_tag_group->pathIndex(to_tag, to_path_index, to_path_exists);
+    if (to_path_exists) {
       Path &to_path = to_pt_vertex.paths()[to_path_index];
       const Required &to_required = to_path.required();
       Required from_required = to_required - arc_delay;

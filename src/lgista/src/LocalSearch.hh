@@ -7,7 +7,9 @@
 #include "sta/NetworkClass.hh"
 #include "sta/Delay.hh"
 
+#include <memory>
 #include <stdexcept>
+#include <vector>
 
 namespace sta
 {
@@ -180,7 +182,8 @@ protected:
 
   bool always_to_endpoints_;
   bool always_save_prev_paths_;
-  TagGroupBldr *tag_bldr_;
+  std::unique_ptr<TagGroupBldr> tag_bldr_;
+  std::vector<Required> saved_reqs_;
   bool has_fanin_one_;
 };
 
