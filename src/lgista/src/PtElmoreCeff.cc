@@ -175,6 +175,7 @@ PtElmoreCeff::computeCeffAlgo2WithRefinedSlew(float slew_i, float slew_factor)
 void
 PtElmoreCeff::clear()
 {
+  rc_probes_.clear();
   tree_.clear();
   loads_.clear();
   pin_index_.clear();

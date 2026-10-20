@@ -23,6 +23,8 @@ add_library(lgista_lib
     src/LocalReduceParasitic.cc
     src/LocalParasitics.cc
     src/LocalDmpDelayCalc.cc
+    src/RcProbe.cc
+    src/ObservedDmpDelayCalc.cc
     src/LocalElmoreCeffDelayCalc.cc
     src/LocalSearch.cc
     src/LocalPath.cc

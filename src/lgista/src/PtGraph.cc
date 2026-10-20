@@ -1,6 +1,8 @@
 #include "PtGraph.hh"
 #include "Sta.hh"
 #include <algorithm>
+#include <cmath>
+#include <utility>
 #include <cstdio>
 #include <numeric>
 #include <deque>
@@ -11,9 +13,208 @@
 #include "sta/Search.hh"
 #include "sta/SearchPred.hh"
 #include "search/TagGroup.hh"
+#include "search/Tag.hh"
 #include "LocalSta.hh"
 
 namespace lgista {
+
+void PtGraph::setRcProbeBindings(std::vector<RcProbeBinding> bindings)
+{
+  for (size_t i = 0; i < bindings.size(); ++i) {
+    const auto& binding = bindings[i];
+    if (!binding.net || !binding.network || !binding.node || !binding.driver)
+      throw std::invalid_argument("RC probe requires a net, network, node and driver");
+    if (std::any_of(binding.sinks.begin(), binding.sinks.end(),
+                    [](const sta::Pin* sink) { return sink == nullptr; }))
+      throw std::invalid_argument("RC probe contains a null required-time sink");
+    for (size_t j = 0; j < i; ++j) {
+      const auto& previous = bindings[j];
+      if (previous.id == binding.id && previous.driver == binding.driver
+          && (previous.net != binding.net
+              || !std::is_permutation(previous.sinks.begin(), previous.sinks.end(),
+                                      binding.sinks.begin(), binding.sinks.end())))
+        throw std::invalid_argument("RC probe AP bindings disagree on net or sinks");
+    }
+  }
+  rc_probe_bindings_ = std::move(bindings);
+  rc_probe_contexts_.clear();
+  rc_probe_arrivals_.clear();
+  rc_probe_requireds_.clear();
+  rc_probe_timings_.clear();
+}
+
+bool PtGraph::hasRcProbesForDriver(const sta::Pin* driver) const
+{
+  return driver && std::any_of(rc_probe_bindings_.begin(), rc_probe_bindings_.end(),
+                              [driver](const auto& b) { return b.driver == driver; });
+}
+
+void PtGraph::beginRcProbeDelays(int ap_index)
+{
+  rc_probe_contexts_.erase(
+      std::remove_if(rc_probe_contexts_.begin(), rc_probe_contexts_.end(),
+                     [ap_index](const auto& c) { return c.ap_index == ap_index; }),
+      rc_probe_contexts_.end());
+  beginRcProbeArrivals(ap_index);
+  beginRcProbeRequireds(ap_index);
+}
+
+void PtGraph::beginRcProbeArrivals(int ap_index)
+{
+  rc_probe_arrivals_.erase(
+      std::remove_if(rc_probe_arrivals_.begin(), rc_probe_arrivals_.end(),
+                     [ap_index](const auto& s) { return s.ap_index == ap_index; }),
+      rc_probe_arrivals_.end());
+  rc_probe_timings_.clear();
+}
+
+void PtGraph::beginRcProbeRequireds(int ap_index)
+{
+  rc_probe_requireds_.erase(
+      std::remove_if(rc_probe_requireds_.begin(), rc_probe_requireds_.end(),
+                     [ap_index](const auto& r) { return r.ap_index == ap_index; }),
+      rc_probe_requireds_.end());
+  rc_probe_timings_.clear();
+}
+
+void PtGraph::addRcProbeContext(RcProbeArcContext context)
+{
+  rc_probe_contexts_.push_back(std::move(context));
+}
+
+void PtGraph::recordRcProbeArrival(const PtEdge& edge,
+                                    const sta::TimingArc* arc,
+                                    int ap_index,
+                                    uint32_t from_tag,
+                                    uint32_t to_tag,
+                                    double driver_arrival)
+{
+  if (edge.isWire() || !hasRcProbesForDriver(ptVertex(edge.ptToId()).pin()))
+    return;
+  rc_probe_arrivals_.push_back(
+      {edge.objectIdx(), arc, ap_index, from_tag, to_tag, driver_arrival});
+}
+
+void PtGraph::recordRcProbeRequired(const PtVertex& driver,
+                                     const sta::Pin* sink,
+                                     int ap_index,
+                                     uint32_t driver_tag,
+                                     uint32_t sink_tag,
+                                     double required,
+                                     bool valid)
+{
+  if (!hasRcProbesForDriver(driver.pin()))
+    return;
+  rc_probe_requireds_.push_back(
+      {driver.objectIdx(), sink, ap_index, driver_tag, sink_tag, required, valid});
+}
+
+void PtGraph::finalizeRcProbeTimings()
+{
+  rc_probe_timings_.clear();
+  for (size_t ci = 0; ci < rc_probe_contexts_.size(); ++ci) {
+    const auto& context = rc_probe_contexts_[ci];
+    for (const auto& sample : context.probes) {
+      const auto binding = std::find_if(
+          rc_probe_bindings_.begin(), rc_probe_bindings_.end(),
+          [&](const auto& b) { return b.id == sample.id && b.driver == sample.driver; });
+      if (binding == rc_probe_bindings_.end())
+        continue;
+      bool matched_path = false;
+      for (const auto& seed : rc_probe_arrivals_) {
+        if (seed.edge_id != context.edge_id || seed.arc != context.arc
+            || seed.ap_index != context.ap_index)
+          continue;
+        matched_path = true;
+        RcProbeTiming timing;
+        timing.id = sample.id;
+        timing.context_index = ci;
+        timing.ap_index = context.ap_index;
+        timing.rf_index = sample.rf ? sample.rf->index() : -1;
+        timing.min_max_index = sample.min_max ? sample.min_max->index() : -1;
+        timing.source_tag_index = seed.source_tag;
+        timing.propagated_tag_index = seed.driver_tag;
+        timing.driver_tag_index = seed.driver_tag;
+        // Resolve through the same TagMatchLess map used by local propagation.
+        // The winning stored tag need not have the incoming tag's exact index.
+        const auto& driver = ptVertex(context.driver_id);
+        auto* group = tagGroup(driver);
+        size_t path_index = 0;
+        bool path_exists = false;
+        if (group && driver.paths() && seed.driver_tag < sta_->search()->tagCount()) {
+          group->pathIndex(sta_->search()->tag(seed.driver_tag), path_index, path_exists);
+          if (path_exists)
+            timing.driver_tag_index = driver.paths()[path_index].tagIndex(sta_);
+        }
+        timing.path_matched = true;
+        timing.driver_arrival = seed.driver_arrival;
+        timing.wire_delay = sample.wire_delay;
+        timing.slew = sample.slew;
+        timing.arrival = seed.driver_arrival + sample.wire_delay;
+        timing.arrival_valid = sample.valid && sample.rf && sample.min_max
+                               && std::isfinite(timing.arrival)
+                               && std::isfinite(timing.slew);
+        timing.error = sample.error;
+        if (timing.arrival_valid) {
+          bool missing_delay = false;
+          for (const auto& required : rc_probe_requireds_) {
+            if (required.driver_id != context.driver_id
+                || required.ap_index != context.ap_index
+                || !path_exists || required.driver_tag != timing.driver_tag_index
+                || !required.valid
+                || std::find(binding->sinks.begin(), binding->sinks.end(), required.sink)
+                       == binding->sinks.end())
+              continue;
+            const auto sink = std::find_if(
+                context.sinks.begin(), context.sinks.end(),
+                [&](const auto& s) { return s.sink == required.sink; });
+            if (sink == context.sinks.end() || !std::isfinite(sink->wire_delay)) {
+              missing_delay = true;
+              continue;
+            }
+            // Both wire values come from THIS gate calculation. The sink
+            // value already includes its real library's threshold conversion.
+            const double value = required.required
+                                 - (sink->wire_delay - sample.wire_delay);
+            if (!std::isfinite(value)) {
+              missing_delay = true;
+              continue;
+            }
+            const bool tighter = timing.min_max_index == 0
+                                     ? value > timing.required : value < timing.required;
+            if (!timing.required_valid || tighter) {
+              timing.required = value;
+              timing.required_sink = required.sink;
+              timing.required_tag_index = required.sink_tag;
+              timing.required_valid = true;
+            }
+          }
+          if (missing_delay) {
+            timing.required_valid = false;
+            timing.error = "matching required path has no same-context wire delay";
+          } else if (!timing.required_valid) {
+            timing.error = "no finite downstream required for this path tag";
+          }
+          if (timing.required_valid)
+            timing.slack = timing.min_max_index == 0
+                               ? timing.arrival - timing.required
+                               : timing.required - timing.arrival;
+        }
+        rc_probe_timings_.push_back(std::move(timing));
+      }
+      if (!matched_path) {
+        RcProbeTiming timing;
+        timing.id = sample.id;
+        timing.context_index = ci;
+        timing.ap_index = context.ap_index;
+        timing.rf_index = sample.rf ? sample.rf->index() : -1;
+        timing.min_max_index = sample.min_max ? sample.min_max->index() : -1;
+        timing.error = sample.valid ? "no matching local data path for RC probe" : sample.error;
+        rc_probe_timings_.push_back(std::move(timing));
+      }
+    }
+  }
+}
 
 using sta::ArcDelay;
 using sta::DcalcAPIndex;

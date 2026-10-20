@@ -677,6 +677,15 @@ LocalArrivalVisitor::localVisitFromToPath(
                     Arrival &to_arrival,
                     const MinMax *min_max)
 {
+  // Observe the existing legal tag transition before the arrival comparator
+  // discards non-winning gate paths. No new graph path or global tag is made.
+  if (!pt_graph_->rcProbeBindings().empty() && !pt_edge.isWire()
+      && from_tag && to_tag && !from_tag->isClock() && !from_tag->isGenClkSrcPath()
+      && !delayInf(to_arrival, this)) {
+    pt_graph_->recordRcProbeArrival(pt_edge, arc,
+        pt_graph_->scene()->dcalcAnalysisPtIndex(min_max), from_tag->index(),
+        to_tag->index(), delayAsFloat(to_arrival));
+  }
   Path *match;
   size_t path_index;
   tag_bldr_->tagMatchPath(to_tag, match, path_index);
@@ -913,6 +922,15 @@ bool LocalRequiredVisitor::localVisitFromToPath(
     if (to_path_exists) {
       Path &to_path = to_pt_vertex.paths()[to_path_index];
       const Required &to_required = to_path.required();
+      // Reuse the exact driver->sink tag mapping chosen by the local search.
+      // HBT requireds must use only its requested crossing sinks, never an
+      // unrelated pin's worst required time or a different RF/AP path.
+      if (!pt_graph_->rcProbeBindings().empty() && pt_edge.isWire()
+          && !from_tag->isClock() && !from_tag->isGenClkSrcPath()) {
+        pt_graph_->recordRcProbeRequired(from_pt_vertex, to_pt_vertex.pin(),
+            pt_graph_->scene()->dcalcAnalysisPtIndex(min_max), from_tag->index(),
+            to_tag->index(), delayAsFloat(to_required), !delayInf(to_required, this));
+      }
       Required from_required = to_required - arc_delay;
       required_cmp_->requiredSet(path_index, from_required, req_min, this);
     }

@@ -2,6 +2,7 @@
 // Copyright (c) 2026, The OpenROAD Authors
 
 #pragma once
+#include "lgista/RcProbe.hh"
 
 #include <cstdint>
 #include <limits>
@@ -164,9 +165,14 @@ public:
 
   void clear();
 
+  void addRcProbe(RcProbeId id, uint32_t tree_node_idx)
+  { rc_probes_.push_back({id, 0.0, tree_node_idx}); }
+  const std::vector<RcProbeMoment>& rcProbes() const { return rc_probes_; }
+
 private:
   std::vector<PtRcNode> tree_;
   std::vector<PtRcLoad> loads_;
+  std::vector<RcProbeMoment> rc_probes_;
   std::unordered_map<const Pin*, size_t> pin_index_;
   std::unordered_map<VertexId, size_t>   vid_index_;
   float total_cap_ = 0.0f;

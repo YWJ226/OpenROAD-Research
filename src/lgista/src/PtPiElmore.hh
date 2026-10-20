@@ -5,6 +5,7 @@
 
 #include "parasitics/ConcreteParasiticsPvt.hh"
 #include "sta/GraphClass.hh"
+#include "lgista/RcProbe.hh"
 
 namespace lgista {
 
@@ -57,10 +58,16 @@ public:
   size_t loadCount() const { return loads_.size(); }
   const std::vector<PtElmoreLoad>& loads() const { return loads_; }
 
+  void clearRcProbes() { rc_probes_.clear(); }
+  void addRcProbe(RcProbeId id, double elmore)
+  { rc_probes_.push_back({id, static_cast<float>(elmore)}); }
+  const std::vector<RcProbeMoment>& rcProbes() const { return rc_probes_; }
+
 private:
   std::vector<PtElmoreLoad> loads_;
   std::unordered_map<const Pin*, size_t> pin_index_;
   std::unordered_map<VertexId, size_t> vid_index_;
+  std::vector<RcProbeMoment> rc_probes_;
 };
 
 } // namespace lgista

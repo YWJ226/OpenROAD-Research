@@ -82,6 +82,8 @@ protected:
   bool isLoopResistor(ParasiticResistor *resistor);
   void markLoopResistor(ParasiticResistor *resistor);
   float localPinCapacitance(ParasiticNode *node);
+  void initializeRcProbes(const Parasitic* network, const Pin* driver);
+  void checkRcProbeCount(size_t actual) const;
 
   bool includes_pin_caps_;
   float coupling_cap_multiplier_;
@@ -100,6 +102,8 @@ protected:
   // consumed by reduceElmoreDfsToPt to emit per-load Elmore into both
   // PtPiElmore and PtElmoreCeff. Cleared at the start of each reduce.
   std::unordered_map<const sta::Pin *, uint32_t> ec_pin_to_tree_idx_;
+  std::unordered_map<const ParasiticNode*, std::vector<RcProbeId>> rc_probe_ids_;
+  size_t rc_probe_count_ = 0;
 
   const PtGraph *pt_graph_;
   // The Parasitics object to query/build on (the LocalParasitics that owns the

@@ -125,6 +125,9 @@ public:
   // Functions for Searching arrivals and required times
   void findLocalArrivals(PtGraph *pt_graph);
   void findLocalRequireds(PtGraph *pt_graph);
+  // Called after all requested AP arrival/required passes. Observations are
+  // passive records; this does not create tags or write the global graph.
+  void finalizeRcProbeTiming(PtGraph *pt_graph);
   // Full version: checks hasVirtualBuffer tag and recomputes load cap if needed
   void localParasiticLoad(PtVertex &drvr_pt_vertex,
                           const RiseFall *rf,

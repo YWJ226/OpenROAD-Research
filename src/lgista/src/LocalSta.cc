@@ -1,6 +1,8 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <limits>
+#include <algorithm>
 #include <cstdio>
 #include <mutex>
 #include <cstring>
@@ -672,6 +674,8 @@ LocalSta::topoSortVertices(PtGraph *pt_graph)
 void
 LocalSta::findLocalDelays(PtGraph *pt_graph, ArcDelayCalc *arc_delay_calc)
 {
+  if (!pt_graph->rcProbeBindings().empty())
+    pt_graph->beginRcProbeDelays(pt_graph->apIndex());
   for (VertexId vertex_id : pt_graph->sortedVertexIds()) {
     PtVertex &pt_vertex = pt_graph->ptVertex(vertex_id);
     findVertexDelays(vertex_id,  arc_delay_calc, pt_graph);
@@ -1299,6 +1303,76 @@ LocalSta::findDriverArcDelays(PtVertex &drvr_pt_vertex,
       dcalc_result = arc_delay_calc->gateDelay(
                           dcalc_pin, arc, in_slew, load_cap, parasitic,
                           load_pin_index_map, pt_graph->scene(), pt_graph->minMax());
+
+      if (pt_graph->hasRcProbesForDriver(drvr_pin)) {
+        const auto* drvr_vertex = drvr_pt_vertex.vertex();
+        // Consume the calculator's current context before annotation or the
+        // optional perturbed gateDelay below can overwrite it. In particular,
+        // do not infer a probe waveform from the merged output slew.
+        const auto* calculator = dynamic_cast<const RcProbeCalculator*>(arc_delay_calc);
+        if (!calculator)
+          throw std::runtime_error("RC observations require makeProbeDelayCalc");
+        RcProbeArcContext context;
+        context.edge_id = pt_edge.objectIdx();
+        context.driver_id = drvr_pt_vertex.objectIdx();
+        context.arc = arc;
+        context.ap_index = dcalc_ap;
+        context.gate_delay = delayAsFloat(dcalc_result.gateDelay());
+        for (const auto& binding : pt_graph->rcProbeBindings()) {
+          if (binding.driver != drvr_pin)
+            continue;
+          // The same logical id may have bindings in several AP networks.
+          if (std::any_of(context.probes.begin(), context.probes.end(),
+                          [&](const auto& sample) { return sample.id == binding.id; }))
+            continue;
+          const auto& samples = calculator->rcProbeSamples();
+          const auto sample = std::find_if(samples.begin(), samples.end(),
+              [&](const auto& s) {
+                return s.id == binding.id && s.driver == dcalc_pin && s.arc == arc
+                       && s.scene == pt_graph->scene() && s.min_max == pt_graph->minMax()
+                       && s.rf == drvr_rf;
+              });
+          if (sample != samples.end())
+            context.probes.push_back(*sample);
+          else {
+            RcProbeSample unavailable;
+            unavailable.id = binding.id;
+            unavailable.driver = drvr_pin;
+            unavailable.arc = arc;
+            unavailable.scene = pt_graph->scene();
+            unavailable.min_max = pt_graph->minMax();
+            unavailable.rf = drvr_rf;
+            unavailable.error = "RC node was not observed in this gate calculation";
+            context.probes.push_back(std::move(unavailable));
+          }
+        }
+        for (const auto& [load_pin, index] : load_pin_index_map) {
+          const auto delay = dcalc_result.wireDelay(index);
+          context.sinks.push_back({load_pin, delayInf(delay, this)
+              ? std::numeric_limits<double>::quiet_NaN() : delayAsFloat(delay)});
+        }
+        // These records describe the actual model calculation. Explicitly
+        // annotated/mapped boundaries would require a separate waveform model.
+        bool annotated = pt_graph->isMappedCellTrial()
+                         || (drvr_vertex && drvr_vertex->slewAnnotated(
+                                                drvr_rf, pt_graph->minMax()))
+                         || (pt_edge.hasBase()
+                             && graph_->arcDelayAnnotated(pt_edge.edge(), arc, dcalc_ap));
+        PtVertexOutEdgeIterator wire_iter(drvr_pt_vertex, pt_graph);
+        while (wire_iter.hasNext()) {
+          auto& wire = wire_iter.next();
+          if (wire.isWire() && wire.hasBase()
+              && graph_->wireDelayAnnotated(wire.edge(), drvr_rf, dcalc_ap))
+            annotated = true;
+        }
+        if (annotated) {
+          for (auto& sample : context.probes) {
+            sample.valid = false;
+            sample.error = "RC observation has an annotated or mapped timing boundary";
+          }
+        }
+        pt_graph->addRcProbeContext(std::move(context));
+      }
 
       annotateDelaysSlews(pt_edge, arc, dcalc_result,
                           load_pin_index_map, dcalc_ap, pt_graph);
@@ -2851,6 +2925,8 @@ LocalSta::virtualReplaceCell(PtGraph *pt_graph, LibertyCell *new_cell)
 void 
 LocalSta::findLocalArrivals(PtGraph *pt_graph)
 {
+  if (!pt_graph->rcProbeBindings().empty())
+    pt_graph->beginRcProbeArrivals(pt_graph->apIndex());
   LocalArrivalVisitor arrival_visitor(this, pt_graph, debug_label_);
   arrival_visitor.findLocalArrivals();
 }
@@ -2858,8 +2934,16 @@ LocalSta::findLocalArrivals(PtGraph *pt_graph)
 void 
 LocalSta::findLocalRequireds(PtGraph *pt_graph)
 {
+  if (!pt_graph->rcProbeBindings().empty())
+    pt_graph->beginRcProbeRequireds(pt_graph->apIndex());
   LocalRequiredVisitor required_visitor(this, pt_graph);
   required_visitor.findLocalRequireds();
+}
+
+void LocalSta::finalizeRcProbeTiming(PtGraph *pt_graph)
+{
+  if (pt_graph)
+    pt_graph->finalizeRcProbeTimings();
 }
 
 sta::Path *

@@ -100,6 +100,7 @@ PtPiElmore::addLoad(VertexId vid, const Pin *pin, float elmore)
 void
 PtPiElmore::clear()
 {
+  rc_probes_.clear();
   loads_.clear();
   pin_index_.clear();
   vid_index_.clear();

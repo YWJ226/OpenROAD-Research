@@ -24,6 +24,9 @@
 
 #include "LocalReduceParasitic.hh"
 
+#include <stdexcept>
+#include <unordered_set>
+
 #include "sta/Error.hh"
 #include "sta/Debug.hh"
 #include "sta/MinMax.hh"
@@ -53,6 +56,29 @@ LocalReduceToPi::LocalReduceToPi(StaState *sta, const PtGraph *pt_graph) :
 {
 }
 
+void
+LocalReduceToPi::initializeRcProbes(const Parasitic* network, const Pin* driver)
+{
+  rc_probe_ids_.clear();
+  rc_probe_count_ = 0;
+  if (!pt_graph_) return;
+  std::unordered_set<RcProbeId> ids;
+  for (const auto& binding : pt_graph_->rcProbeBindings()) {
+    if (binding.network != network || binding.driver != driver) continue;
+    if (!binding.node || !ids.insert(binding.id).second)
+      throw std::runtime_error("invalid_or_duplicate_rc_probe_binding");
+    rc_probe_ids_[binding.node].push_back(binding.id);
+    ++rc_probe_count_;
+  }
+}
+
+void
+LocalReduceToPi::checkRcProbeCount(size_t actual) const
+{
+  if (actual != rc_probe_count_)
+    throw std::runtime_error("unreachable_or_repeated_rc_probe_node");
+}
+
 // "Modeling the Driving-Point Characteristic of Resistive
 // Interconnect for Accurate Delay Estimation", Peter O'Brien and
 // Thomas Savarino, Proceedings of the 1989 Design Automation
@@ -70,6 +96,7 @@ LocalReduceToPi::reduceToPi(const Parasitic *parasitic_network,
 		       float &c1,
 		       PtElmoreCeff *ec_sink)
 {
+  initializeRcProbes(parasitic_network, drvr_pin);
   includes_pin_caps_ = parasitics_->includesPinCaps(parasitic_network),
   coupling_cap_multiplier_ = coupling_cap_factor;
   rf_ = rf;
@@ -147,6 +174,9 @@ LocalReduceToPi::reducePiDfs(const Pin *drvr_pin,
     });
     if (const Pin *pin = parasitics_->pin(node))
       ec_pin_to_tree_idx_[pin] = my_ec_idx;
+    const auto probes = rc_probe_ids_.find(node);
+    if (probes != rc_probe_ids_.end())
+      for (RcProbeId id : probes->second) ec_sink->addRcProbe(id, my_ec_idx);
   }
 
   y1 = dwn_cap;
@@ -385,11 +415,13 @@ LocalReduceToPiElmore::makePtPiElmore(const Parasitic *parasitic_network,
                                       const MinMax *min_max,
                                       PtPiElmore &result)
 {
+  result.clearRcProbes();
   float c2, rpi, c1;
   reduceToPi(parasitic_network, drvr_pin, drvr_node, coupling_cap_factor,
              rf, corner, min_max, c2, rpi, c1);
   result.setPiModel(c2, rpi, c1);
   reduceElmoreDfsToPt(drvr_pin, drvr_node, nullptr, 0.0, result);
+  checkRcProbeCount(result.rcProbes().size());
 }
 
 void
@@ -403,6 +435,7 @@ LocalReduceToPiElmore::makePtPiElmoreAndCeff(const Parasitic *parasitic_network,
                                              PtPiElmore &result_pi,
                                              PtElmoreCeff &result_ec)
 {
+  result_pi.clearRcProbes();
   // Pass 1: single DFS computes Pi moments AND pushes the full RC tree
   // into result_ec. result_ec.total_cap_ is set from the root's downstream
   // cap. ec_pin_to_tree_idx_ is populated for pass 2.
@@ -420,6 +453,8 @@ LocalReduceToPiElmore::makePtPiElmoreAndCeff(const Parasitic *parasitic_network,
   // delay[n] and impulse_sq[n] on every PtRcNode for use by Eq.15 +
   // Algorithm 2 at gateDelay time. Slew-invariant — cache once here.
   result_ec.precomputeMoments();
+  checkRcProbeCount(result_pi.rcProbes().size());
+  checkRcProbeCount(result_ec.rcProbes().size());
 }
 
 void
@@ -430,6 +465,9 @@ LocalReduceToPiElmore::reduceElmoreDfsToPt(const Pin *drvr_pin,
                                            PtPiElmore &result,
                                            PtElmoreCeff *ec_sink)
 {
+  const auto probes = rc_probe_ids_.find(node);
+  if (probes != rc_probe_ids_.end())
+    for (RcProbeId id : probes->second) result.addRcProbe(id, elmore);
   const Pin *pin = parasitics_->pin(node);
   if (from_res && pin) {
     // Safety: verify pin has a valid vertex before dereferencing.
@@ -481,6 +519,7 @@ LocalReduceToPiElmore::makePtElmoreCeffOnly(
     const MinMax *min_max,
     PtElmoreCeff &result_ec)
 {
+  initializeRcProbes(parasitic_network, drvr_pin);
   // Setup identical to reduceToPi's setup block — we still need the
   // parasitic node maps + pin-cap helpers, just not the Pi math that
   // sits on top of them.
@@ -507,6 +546,7 @@ LocalReduceToPiElmore::makePtElmoreCeffOnly(
   // impulse_sq[n] per node. These are what gateDelay actually reads at
   // runtime; per-load PtRcLoad.elmore stays 0 (unused in env=on).
   result_ec.precomputeMoments();
+  checkRcProbeCount(result_ec.rcProbes().size());
 }
 
 void
@@ -544,6 +584,10 @@ LocalReduceToPiElmore::topologyAndLoadsDfs(
       0.0f,  // impulse_sq   — filled by precomputeMoments
   });
   total_cap_acc += local_cap;
+
+  const auto probes = rc_probe_ids_.find(node);
+  if (probes != rc_probe_ids_.end())
+    for (RcProbeId id : probes->second) result_ec.addRcProbe(id, my_idx);
 
   // Inline load record — my_idx is known right now, so no need for the
   // ec_pin_to_tree_idx_ Pin*→idx map the dual-output path uses.

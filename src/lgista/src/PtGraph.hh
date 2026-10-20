@@ -15,6 +15,7 @@
 #include "sta/TimingArc.hh"
 #include <map>
 #include "lgista/LrfClass.hh"
+#include "lgista/RcProbeTiming.hh"
 #include "PtPiElmore.hh"
 #include "PtElmoreCeff.hh"
 #include <stdexcept>
@@ -397,6 +398,31 @@ public:
     return scene_->dcalcAnalysisPtIndex(min_max_);
   }
 
+  // Passive RC observations. These never create graph pins, paths or tags.
+  // Bindings borrow candidate-owned RC nodes; all timing results are values.
+  void setRcProbeBindings(std::vector<RcProbeBinding> bindings);
+  const std::vector<RcProbeBinding>& rcProbeBindings() const {
+    return rc_probe_bindings_;
+  }
+  const std::vector<RcProbeArcContext>& rawRcProbeContexts() const {
+    return rc_probe_contexts_;
+  }
+  const std::vector<RcProbeTiming>& rcProbeTimings() const {
+    return rc_probe_timings_;
+  }
+  bool hasRcProbesForDriver(const sta::Pin* driver) const;
+  void beginRcProbeDelays(int ap_index);
+  void beginRcProbeArrivals(int ap_index);
+  void beginRcProbeRequireds(int ap_index);
+  void addRcProbeContext(RcProbeArcContext context);
+  void recordRcProbeArrival(const PtEdge& edge, const sta::TimingArc* arc,
+                            int ap_index, uint32_t from_tag, uint32_t to_tag,
+                            double driver_arrival);
+  void recordRcProbeRequired(const PtVertex& driver, const sta::Pin* sink,
+                             int ap_index, uint32_t driver_tag,
+                             uint32_t sink_tag, double required, bool valid);
+  void finalizeRcProbeTimings();
+
   // PtGraph-local PiElmore parasitics
   PtPiElmore* findPtParasitic(VertexId drvr_id,
                                const sta::RiseFall *rf,
@@ -474,6 +500,29 @@ protected:
   bool final_eval_mode_ = false;
   sta::Scene *scene_ = nullptr;
   const sta::MinMax *min_max_ = nullptr;
+
+  struct RcProbeArrivalSeed {
+    sta::EdgeId edge_id;
+    const sta::TimingArc* arc;
+    int ap_index;
+    uint32_t source_tag;
+    uint32_t driver_tag;
+    double driver_arrival;
+  };
+  struct RcProbeRequiredLink {
+    sta::VertexId driver_id;
+    const sta::Pin* sink;
+    int ap_index;
+    uint32_t driver_tag;
+    uint32_t sink_tag;
+    double required;
+    bool valid;
+  };
+  std::vector<RcProbeBinding> rc_probe_bindings_;
+  std::vector<RcProbeArcContext> rc_probe_contexts_;
+  std::vector<RcProbeArrivalSeed> rc_probe_arrivals_;
+  std::vector<RcProbeRequiredLink> rc_probe_requireds_;
+  std::vector<RcProbeTiming> rc_probe_timings_;
 
   // PtGraph-local PiElmore parasitics storage.
   // Key: driver VertexId. Value: vector indexed by rf * ap_count + ap_index.
